@@ -165,18 +165,20 @@ meaningful predictions.
 
 MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
-| Approach | Flash size | Runtime overhead | Heap usage |
-|---|---|---|---|
-| **edge-infer (INT8)** | **54 KB** (2 KB code + 51 KB weights) | **None** (no interpreter) | **0** (stack only) |
-| **edge-infer (f32)** | **204 KB** (2 KB code + 202 KB weights) | **None** | **0** |
-| TFLite Micro (typical) | 60-100 KB runtime + model data | Runtime dispatch, FlatBuffer parsing | Tensor arena allocation |
+| Approach | Flash size | Runtime overhead | Heap usage | MNIST accuracy |
+|---|---|---|---|---|
+| **edge-infer (INT8)** | **54 KB** | **None** (no interpreter) | **0** (stack only) | **98.88%** |
+| **edge-infer (f32)** | **204 KB** | **None** | **0** | **98.87%** |
+| TFLite Micro (optimized) | ~105 KB | Runtime dispatch, FlatBuffer parsing | Tensor arena | 98.87% |
+| TFLite Micro (typical) | ~275 KB | Same | Same | Same |
 
 edge-infer numbers measured from compiled Cortex-M4 binaries (`opt-level="z"`, LTO).
-TFLite Micro runtime alone is [typically 60-100 KB](https://github.com/tensorflow/tflite-micro/issues/3069)
-before model data is added.
-The key difference is architectural: edge-infer has **zero runtime overhead** -- the
-compiler eliminates all dispatch and memory management. INT8 uses per-tensor symmetric
-quantization with 10/10 MNIST digits still predicted correctly.
+TFLite Micro numbers: optimized = `MicroMutableOpResolver` with only needed ops;
+typical = real-world builds as [measured by University of Trento](https://arxiv.org/abs/2110.01191)
+on nRF52840. All-ops library measured locally at 447 KB.
+
+Accuracy tested on the full MNIST test set (10,000 images). INT8 quantization
+is essentially lossless -- only 5 out of 10,000 predictions differ from f32.
 
 ## How it works
 

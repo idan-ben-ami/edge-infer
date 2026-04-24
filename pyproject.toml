@@ -10,9 +10,6 @@ dependencies = [
     "onnxruntime>=1.16",
 ]
 
-[project.scripts]
-edge-infer = "edge_infer:main"
-
 [project.optional-dependencies]
 # Only needed to train example models (downloads ~2GB of PyTorch)
 train = [
