@@ -14,7 +14,7 @@ ONNX model ──────────────────> Rust no_std c
 
 ## Why this exists
 
-[Edge Impulse was acquired by Qualcomm](https://edgeimpulse.com/blog/qualcomm-acquires-edge-impulse/) (March 2025),
+[Edge Impulse was acquired by Qualcomm](https://www.edgeimpulse.com/blog/edge-impulse-qualcomm-acquisition/) (March 2025),
 leaving a vacuum in the open-source TinyML tooling space.
 Meanwhile, [MicroFlow](https://github.com/matteocarnelos/microflow-rs) (University of Padova thesis)
 demonstrated that Rust can match or beat TFLite Micro on bare-metal MCUs by embedding
@@ -174,7 +174,7 @@ MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
 edge-infer numbers measured from compiled Cortex-M4 binaries (`opt-level="z"`, LTO).
 TFLite Micro numbers: optimized = `MicroMutableOpResolver` with only needed ops;
-typical = real-world builds as [measured by University of Trento](https://arxiv.org/abs/2110.01191)
+typical = real-world builds as [measured in TinyML Platforms Benchmarking](https://arxiv.org/abs/2112.01319)
 on nRF52840. All-ops library measured locally at 447 KB.
 
 Accuracy tested on the full MNIST test set (10,000 images). INT8 quantization
@@ -199,7 +199,7 @@ is essentially lossless -- only 5 out of 10,000 predictions differ from f32.
       - Cargo.toml: no_std crate config with size optimization
 ```
 
-The code generator (`edge_infer.py`) is a single Python script (~960 lines).
+The code generator (`edge_infer.py`) is a single Python script (~1250 lines).
 A Rust rewrite is planned -- single binary, no Python dependency.
 
 ## Supported ops
