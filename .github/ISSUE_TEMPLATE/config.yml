@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Discussions
+    url: https://github.com/idan-ben-ami/edge-infer/issues
+    about: General questions and discussion
