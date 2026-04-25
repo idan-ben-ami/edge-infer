@@ -14,15 +14,15 @@ ONNX model ──────────────────> Rust no_std c
 
 ## Why this exists
 
-[Edge Impulse was acquired by Qualcomm](https://www.edgeimpulse.com/blog/edge-impulse-qualcomm-acquisition/) (March 2025),
-leaving a vacuum in the open-source TinyML tooling space.
-Meanwhile, [MicroFlow](https://github.com/matteocarnelos/microflow-rs) (University of Padova thesis)
-demonstrated that Rust can match or beat TFLite Micro on bare-metal MCUs by embedding
-the model at compile time instead of interpreting it at runtime.
+[Edge Impulse was acquired by Qualcomm](https://www.edgeimpulse.com/blog/edge-impulse-qualcomm-acquisition/) (March 2025).
+If you want vendor-neutral, open-source TinyML tooling, your options just got thinner.
 
+Separately, [MicroFlow](https://github.com/matteocarnelos/microflow-rs) (University of Padova thesis)
+proved that Rust can match or beat TFLite Micro on bare-metal MCUs by embedding
+the model at compile time instead of interpreting it at runtime.
 Nobody productized that approach. edge-infer does.
 
-The key insight: when you eliminate the interpreter, you eliminate the runtime overhead.
+The trick is simple: eliminate the interpreter, eliminate the runtime overhead.
 TFLite Micro ships a ~60-100KB C++ runtime that parses FlatBuffers, dispatches ops,
 and manages memory at runtime. edge-infer generates a single `predict()` function
 with all shapes known at compile time, all buffers on the stack, and all weights
@@ -217,14 +217,14 @@ More will be added as models demand them.
 
 ## Current limitations
 
-- **INT8 is weight-only** -- weights are quantized to i8 and dequantized at inference
+- INT8 is weight-only: weights are quantized to i8 and dequantized at inference
   time. Full integer inference (faster on Cortex-M with CMSIS-NN) is planned.
-- **5 ONNX ops** -- covers CNN classifiers but not yet RNNs, attention, or
+- 5 ONNX ops. Covers CNN classifiers but not yet RNNs, attention, or
   more exotic architectures. Conv stride > 1 is not yet supported.
-- **Tested on one model** -- the MNIST CNN validates the approach, but more
+- Only tested on one model (MNIST CNN). The approach works, but more
   architectures need testing.
-- **Python code generator** -- works, but the plan is to rewrite in Rust for
-  a single-binary distribution with no Python dependency.
+- The code generator is Python. A Rust rewrite is planned for single-binary
+  distribution with no Python dependency.
 
 ## Project structure
 
@@ -245,13 +245,13 @@ edge-infer/
 
 ## Roadmap
 
-- ~~INT8 quantization~~ -- done (per-tensor symmetric, weight-only dequant)
-- **Full integer inference** -- INT8 activations + INT8 weights for speed on Cortex-M (CMSIS-NN)
-- **More ONNX ops** -- BatchNorm, AvgPool, Softmax, Add/Mul elementwise, depthwise conv
-- **Rust rewrite** -- single binary, no Python dependency, faster compilation
-- **Real hardware benchmarks** -- STM32, nRF52, ESP32-S3 cycle counts and power measurements
-- **Multi-target** -- RISC-V (ESP32-C3), Cortex-M0/M7, target-specific SIMD intrinsics
-- **Model optimization** -- pruning, operator fusion, constant folding
+- ~~INT8 quantization~~ done (per-tensor symmetric, weight-only dequant)
+- Full integer inference: INT8 activations + INT8 weights for speed on Cortex-M (CMSIS-NN)
+- More ONNX ops: BatchNorm, AvgPool, Softmax, Add/Mul elementwise, depthwise conv
+- Rust rewrite: single binary, no Python dependency, faster compilation
+- Real hardware benchmarks: STM32, nRF52, ESP32-S3 cycle counts and power measurements
+- Multi-target: RISC-V (ESP32-C3), Cortex-M0/M7, target-specific SIMD intrinsics
+- Model optimization: pruning, operator fusion, constant folding
 
 ## License
 
