@@ -1,0 +1,61 @@
+# Linux clean-clone smoke test.
+#
+# Mirrors what an embedded developer hits on Ubuntu 24.04: fresh box, no
+# Python deps, no Rust toolchain, no QEMU. If `docker build` succeeds, the
+# README's 3-command quickstart + QEMU demo work end-to-end on Linux.
+#
+# Usage:
+#   docker build -f Dockerfile.smoke -t edge-infer-smoke .
+#
+# Each RUN step models one quickstart command. Any failure halts the build.
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System packages: build chain, QEMU, and curl for the installers below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl build-essential pkg-config \
+        qemu-system-arm \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv (Python package manager).  Astral's installer drops it in /root/.local/bin.
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# rustup (Rust toolchain) + thumbv7em-none-eabihf for Cortex-M4.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+RUN rustup target add thumbv7em-none-eabihf
+
+WORKDIR /workspace
+COPY . .
+
+# Step 1 — Python deps.
+RUN uv sync
+
+# Step 2 — generate the Rust crate from the bundled MNIST ONNX (INT8).
+RUN uv run python edge_infer.py examples/mnist/mnist_cnn.onnx \
+        --output ./mnist_model/ --quantize int8
+
+# Step 3 — host build of the generated crate.
+RUN cd mnist_model && cargo build --release
+
+# Step 4 — cross-compile the QEMU demo for Cortex-M4.
+RUN cd mnist_model && cargo build --bin demo --features demo \
+        --target thumbv7em-none-eabihf --release
+
+# Step 5 — boot the demo in QEMU, kill it after 15s, assert the prediction
+# line is present in the output. `|| true` swallows the timeout exit code;
+# the real check is grep on the captured log.
+RUN cd mnist_model && \
+    timeout 15s qemu-system-arm \
+        -cpu cortex-m4 -machine lm3s6965evb -nographic \
+        -semihosting-config enable=on,target=native \
+        -kernel target/thumbv7em-none-eabihf/release/demo \
+        > /tmp/qemu_output.log 2>&1 || true; \
+    echo "=== QEMU output ===" && cat /tmp/qemu_output.log && \
+    grep -q "Predicted class:" /tmp/qemu_output.log
+
+CMD ["echo", "Smoke test passed: 3-command quickstart + QEMU demo work on Ubuntu 24.04."]

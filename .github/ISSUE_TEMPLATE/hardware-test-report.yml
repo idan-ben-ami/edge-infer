@@ -1,0 +1,93 @@
+name: Hardware test report
+description: Tried edge-infer on a real MCU? Report what worked (or didn't). This is the highest-signal feedback we get.
+title: "[hardware] <board> — <model>"
+labels: ["hardware-report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports drive the roadmap more than anything else. Even a
+        partial result ("compiles, doesn't fit") is useful — please file it.
+  - type: input
+    id: board
+    attributes:
+      label: Board / MCU
+      description: Specific board name + chip. Include flash and RAM if you know them.
+      placeholder: STM32F411 Black Pill (512 KB flash, 128 KB RAM)
+    validations:
+      required: true
+  - type: input
+    id: target_triple
+    attributes:
+      label: Rust target triple
+      placeholder: thumbv7em-none-eabihf
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: Architecture + ONNX file source. Bonus if it's public.
+      placeholder: MNIST CNN (the example), or MobileNetV1-0.25
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - It worked — compiled, flashed, ran correctly
+        - Compiled but doesn't fit (flash or RAM)
+        - Compiled and fit, but produces wrong outputs
+        - Compile error from edge-infer (codegen)
+        - Compile error from rustc / linker
+        - QEMU works but real hardware doesn't
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: flash_size
+    attributes:
+      label: Flash size (release build)
+      description: Output of `cargo size` or equivalent. Helpful for benchmarks.
+      placeholder: 54 KB (.text + .rodata)
+    validations:
+      required: false
+  - type: input
+    id: runtime
+    attributes:
+      label: Inference runtime
+      description: One forward pass, in microseconds or cycles, plus the clock speed.
+      placeholder: 12 ms @ 84 MHz
+    validations:
+      required: false
+  - type: input
+    id: quantization
+    attributes:
+      label: Quantization
+      placeholder: int8 / f32
+    validations:
+      required: false
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: |
+        What worked, what didn't, any surprises. If outputs are wrong,
+        attach the input + expected output + observed output if you can.
+        If size is the issue, what budget were you targeting?
+      placeholder: |
+        e.g. Builds with opt-level="z" + LTO. .text=48KB, .rodata=6KB.
+        Inference matches Python reference within 1e-4. CMSIS-DSP not used.
+    validations:
+      required: true
+  - type: textarea
+    id: comparison
+    attributes:
+      label: Comparison baseline (optional but valuable)
+      description: |
+        If you've tried the same model on TFLite Micro / CMSIS-NN / MicroFlow,
+        share the numbers. Head-to-head data is what convinces other
+        embedded devs to try edge-infer.
+    validations:
+      required: false

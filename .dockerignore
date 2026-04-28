@@ -1,0 +1,33 @@
+# Keep the build context lean and reproducible — exclude anything a user
+# wouldn't get from a fresh `git clone`.
+
+# Python build / venv
+.venv
+__pycache__
+*.pyc
+*.pyo
+build
+dist
+*.egg-info
+
+# Rust build artifacts
+target
+
+# Generated crates (smoke test regenerates these)
+mnist_model
+mnist_model_q8
+
+# Generated test data
+data
+test_data.rs
+test_data_all.rs
+*.npy
+
+# Local-only / not for shipping
+CLAUDE.md
+**/archive/
+.git
+.idea
+.vscode
+*.swp
+*.swo

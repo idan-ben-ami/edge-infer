@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  generator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync dependencies (no train extras)
+        run: uv sync
+
+      - name: Run --check on every example ONNX
+        run: |
+          for onnx in examples/*/[!_]*.onnx; do
+            echo "::group::$onnx"
+            uv run python edge_infer.py --check "$onnx"
+            echo "::endgroup::"
+          done
+
+      - name: Regenerate the canonical example crate
+        run: |
+          uv run python edge_infer.py \
+            examples/mnist/mnist_cnn.onnx \
+            --output /tmp/mnist_ci/ \
+            --quantize int8
+
+      - name: Add Rust toolchain (stable + thumbv7em-none-eabihf)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - name: Cross-compile generated crate (release)
+        run: |
+          cd /tmp/mnist_ci
+          cargo build --release --target thumbv7em-none-eabihf

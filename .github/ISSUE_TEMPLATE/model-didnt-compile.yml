@@ -1,0 +1,91 @@
+name: My model didn't compile
+description: Tried to run edge-infer on your model and it didn't work? File this — it's the most useful kind of feedback we get.
+title: "[didn't compile] <one-line description>"
+labels: ["didnt-compile"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Failed-compilation reports are how edge-infer learns what to build
+        next. The more concrete the model context, the better — even a link
+        to a public ONNX file is gold.
+
+        If the only issue is one or two missing ops, please **also** file
+        an [op-request](https://github.com/idan-ben-ami/edge-infer/issues/new?template=op-request.yml)
+        per op so others can vote. This template is for the bigger picture.
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command you ran
+      description: Including --check output if you ran it first.
+      render: shell
+      placeholder: |
+        $ uv run python edge_infer.py mymodel.onnx --check
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: model_arch
+    attributes:
+      label: Model architecture
+      description: |
+        What's the model? CNN classifier? Keyword spotting? VAD? Anomaly
+        detection? Roughly how many params, what's the input shape, what's
+        the output? A link to the source repo / paper / HuggingFace card
+        is ideal.
+      placeholder: |
+        e.g. MobileNetV1-0.25, 224x224 RGB input, ImageNet-1K classifier.
+        From torchvision, ~470K params.
+    validations:
+      required: true
+  - type: textarea
+    id: export_pipeline
+    attributes:
+      label: How was the ONNX file exported?
+      description: |
+        Source framework (PyTorch, TensorFlow, JAX, ONNX-native?), exporter,
+        opset version. If there's a script, paste the export call.
+      placeholder: |
+        torch.onnx.export(model, dummy_input, "mymodel.onnx",
+                          opset_version=17, do_constant_folding=True)
+    validations:
+      required: false
+  - type: textarea
+    id: missing_ops
+    attributes:
+      label: What did edge-infer say was missing?
+      description: Paste the relevant lines from --check output, or the error from a generation run.
+      render: shell
+    validations:
+      required: false
+  - type: input
+    id: target_mcu
+    attributes:
+      label: Target MCU
+      description: STM32F4? nRF52? ESP32-S3? RP2040? Roughly how much flash and RAM?
+      placeholder: STM32F411 (512 KB flash, 128 KB RAM)
+    validations:
+      required: false
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What are you trying to ship?
+      description: |
+        Application + timeline. This is the most important field for
+        prioritization — real shipping projects come first.
+      placeholder: |
+        e.g. Wearable HRV monitor — anomaly detection on heart rate windows.
+        Currently using TFLite Micro, hoping to ship by August 2026.
+    validations:
+      required: false
+  - type: textarea
+    id: model_share
+    attributes:
+      label: Can you share the ONNX file?
+      description: |
+        A link to the model (Drive, S3, HuggingFace, repo) is the single
+        most useful thing for fixing this. We won't redistribute it.
+        If proprietary, a similar public model with the same architecture
+        helps almost as much.
+    validations:
+      required: false

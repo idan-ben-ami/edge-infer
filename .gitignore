@@ -21,6 +21,9 @@ data/
 test_data.rs
 test_data_all.rs
 
+# ONNX external-data sidecars (the merged single-file .onnx is tracked instead)
+*.onnx.data
+
 # Generated Rust crates (output of edge_infer.py)
 mnist_model*/
 
@@ -32,3 +35,6 @@ mnist_model*/
 .vscode/
 *.swp
 *.swo
+
+# Archive folders anywhere in the repo (e.g. design iterations kept locally)
+archive/

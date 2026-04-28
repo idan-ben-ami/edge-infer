@@ -1,0 +1,63 @@
+name: ONNX op request
+description: Request support for an ONNX operator that edge-infer doesn't yet implement.
+title: "[op-request] <OpName>"
+labels: ["op-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! edge-infer prioritizes new ops by user demand.
+        **One issue per op, please** — that way others can find and 👍 the
+        same op rather than splitting votes across duplicate issues.
+
+        If you want this op, **react with 👍 on the issue.** The op queue is
+        sorted by reaction count.
+  - type: input
+    id: op_name
+    attributes:
+      label: ONNX op name
+      description: Use the exact name as it appears in the ONNX spec (e.g. `BatchNormalization`, `Sigmoid`, `AveragePool`).
+      placeholder: BatchNormalization
+    validations:
+      required: true
+  - type: textarea
+    id: model_context
+    attributes:
+      label: Where do you hit this op?
+      description: |
+        What model / architecture uses this op? A link to the source (PyTorch
+        repo, HuggingFace model, paper) is ideal. If you exported from
+        PyTorch, the export call (with opset version) helps too.
+      placeholder: |
+        e.g. MobileNetV2 from torchvision, exported with
+        torch.onnx.export(..., opset_version=17). BatchNorm appears
+        between every Conv and ReLU.
+    validations:
+      required: true
+  - type: textarea
+    id: use_case
+    attributes:
+      label: What are you trying to deploy?
+      description: |
+        Target MCU, application, and rough timeline. This helps prioritize
+        ops that real projects need now over ops on a "nice to have" list.
+      placeholder: |
+        e.g. Keyword spotting on nRF52840, shipping in Q3 2026. Currently
+        on TFLite Micro at ~120 KB, hoping edge-infer brings us under 60 KB.
+    validations:
+      required: false
+  - type: input
+    id: opset
+    attributes:
+      label: ONNX opset version
+      description: From your exporter. Helps disambiguate which variant of the op you need.
+      placeholder: "17"
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Specific attribute combinations, edge cases, or alternatives you've considered (e.g. "I can fold BN into the preceding Conv at export time, but it's annoying").
+    validations:
+      required: false
