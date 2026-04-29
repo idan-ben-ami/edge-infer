@@ -118,33 +118,85 @@ def _featurize(windows: np.ndarray) -> np.ndarray:
 
 
 def build_dataset():
+    """Build train / test splits with the **fair** methodology.
+
+    Why this matters: an earlier version of this script windowed *all*
+    recordings together, then random-80/20-split the resulting window
+    list. Because adjacent windows overlap by 50% (HOP = WINDOW_SIZE/2),
+    the random split placed near-duplicate windows into both train and
+    test. The model "learned" to recognize specific shifts of a recording
+    rather than to generalize the fault signature, and reported 100%
+    test accuracy. That's leakage, not generalization.
+
+    The fix is two-pronged, matching what production fault-detection
+    pipelines actually do:
+
+      1. **Per-recording split for FAULTY:** with 9 faulty recordings
+         (3 fault types × 3 severities), hold out 2 entire recordings
+         for test. The model never sees a single sample from a held-out
+         recording during training. Concretely: for the 9-recording
+         pool, the test set is whichever 2 a seeded permutation picks.
+
+      2. **Temporal split for HEALTHY:** we have only 1 healthy
+         recording, so per-recording split is impossible. Instead, take
+         the first 80% of the recording for train and the last 20% for
+         test, with a 1-window gap (1024 samples ≈ 85 ms) between them
+         to ensure no train window overlaps any test window.
+
+    Expected drop vs the leakage-prone split: ~85-95% test accuracy
+    instead of 100%. The 100% number was the inflated upper bound;
+    this is the honest one.
+    """
     print("Loading CWRU bearing data...")
     print(f"  healthy: {NORMAL_FILE}")
     healthy_sig = _load_de(NORMAL_FILE)
     print(f"    raw samples: {len(healthy_sig)}")
-    healthy_feats = _featurize(_windows(healthy_sig))
-    print(f"    healthy windows: {healthy_feats.shape[0]}")
 
+    # Temporal split on the single healthy recording: first 80% train,
+    # last 20% test, with a 1-window gap to kill boundary overlap.
+    n_total = len(healthy_sig)
+    cut_train_end = int(0.8 * n_total) - WINDOW_SIZE   # leave gap of 1 window
+    cut_test_start = cut_train_end + WINDOW_SIZE       # gap = WINDOW_SIZE
+    healthy_train_sig = healthy_sig[:cut_train_end]
+    healthy_test_sig = healthy_sig[cut_test_start:]
+    Xh_tr = _featurize(_windows(healthy_train_sig))
+    Xh_te = _featurize(_windows(healthy_test_sig))
+    print(f"    healthy train windows (first 80% of recording): {Xh_tr.shape[0]}")
+    print(f"    healthy test  windows (last 20% of recording):  {Xh_te.shape[0]}")
+
+    # Per-recording split for faulty: hold out 2 entire recordings for test.
+    # Seeded permutation makes the choice deterministic; no cherry-picking.
     print("  faulty:")
-    faulty_chunks = []
-    for f in FAULTY_FILES:
+    faulty_files_perm = list(FAULTY_FILES)
+    np.random.default_rng(SEED).shuffle(faulty_files_perm)
+    n_test_faulty_files = 2
+    test_faulty_files = faulty_files_perm[:n_test_faulty_files]
+    train_faulty_files = faulty_files_perm[n_test_faulty_files:]
+    print(f"    test recordings (held out, never seen during training): {test_faulty_files}")
+    print(f"    train recordings: {train_faulty_files}")
+
+    Xf_tr_list = []
+    for f in train_faulty_files:
         sig = _load_de(f)
         feats = _featurize(_windows(sig))
-        print(f"    {f}: {feats.shape[0]} windows")
-        faulty_chunks.append(feats)
-    faulty_feats = np.concatenate(faulty_chunks, axis=0)
+        print(f"      train  {f}: {feats.shape[0]} windows")
+        Xf_tr_list.append(feats)
+    Xf_tr = np.concatenate(Xf_tr_list, axis=0)
 
-    print(f"\nTotal windows: healthy={len(healthy_feats)}, faulty={len(faulty_feats)}")
+    Xf_te_list = []
+    for f in test_faulty_files:
+        sig = _load_de(f)
+        feats = _featurize(_windows(sig))
+        print(f"      test   {f}: {feats.shape[0]} windows")
+        Xf_te_list.append(feats)
+    Xf_te = np.concatenate(Xf_te_list, axis=0)
 
-    # 80/20 split per class so test set is balanced and disjoint.
+    print(
+        f"\nTotal windows: "
+        f"healthy={Xh_tr.shape[0]}+{Xh_te.shape[0]}, "
+        f"faulty={Xf_tr.shape[0]}+{Xf_te.shape[0]}"
+    )
     rng = np.random.default_rng(SEED)
-    perm_h = rng.permutation(len(healthy_feats))
-    perm_f = rng.permutation(len(faulty_feats))
-    cut_h = int(0.8 * len(healthy_feats))
-    cut_f = int(0.8 * len(faulty_feats))
-
-    Xh_tr, Xh_te = healthy_feats[perm_h[:cut_h]], healthy_feats[perm_h[cut_h:]]
-    Xf_tr, Xf_te = faulty_feats[perm_f[:cut_f]], faulty_feats[perm_f[cut_f:]]
 
     # Standardize on healthy-train stats (realistic: only healthy data
     # is reliably available at calibration time in production).

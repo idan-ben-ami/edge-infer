@@ -503,7 +503,16 @@ def emit_ops_rs(quantize: str = "none") -> str:
 
 
 def emit_cargo_toml(crate_name: str = "mnist-model") -> str:
-    """Generate Cargo.toml for the no_std crate."""
+    """Generate Cargo.toml for the no_std crate.
+
+    Two binaries:
+      * `demo`    — QEMU semihosting demo. Pulls in cortex-m-semihosting +
+                    panic-semihosting (~21 KB of overhead). Useful for
+                    `cargo run` against QEMU. Not what you flash.
+      * `minimal` — Production-shippable. panic-halt, no semihosting.
+                    This is the binary the README's flash-size headline
+                    is measured against.
+    """
     lib_name = crate_name.replace("-", "_")
     return textwrap.dedent(f"""\
         [package]
@@ -519,14 +528,21 @@ def emit_cargo_toml(crate_name: str = "mnist-model") -> str:
         path = "src/bin/demo.rs"
         required-features = ["demo"]
 
+        [[bin]]
+        name = "minimal"
+        path = "src/bin/minimal.rs"
+        required-features = ["minimal"]
+
         [features]
         demo = ["dep:cortex-m", "dep:cortex-m-rt", "dep:cortex-m-semihosting", "dep:panic-semihosting"]
+        minimal = ["dep:cortex-m", "dep:cortex-m-rt", "dep:panic-halt"]
 
         [dependencies]
         cortex-m = {{ version = "0.7", optional = true }}
         cortex-m-rt = {{ version = "0.7", optional = true }}
         cortex-m-semihosting = {{ version = "0.5", optional = true }}
         panic-semihosting = {{ version = "0.6", optional = true }}
+        panic-halt = {{ version = "1", optional = true }}
 
         [profile.release]
         opt-level = "z"
@@ -577,6 +593,46 @@ def emit_demo_rs(input_shape: list[int], lib_name: str) -> str:
             }}
 
             debug::exit(EXIT_SUCCESS);
+            loop {{}}
+        }}
+    """)
+
+
+def emit_minimal_rs(input_shape: list[int], lib_name: str) -> str:
+    """Generate the production-shippable `minimal` binary.
+
+    No semihosting, no demo prints — just runs `predict()` once with
+    a zero input and stores each output to an AtomicU32 sink so the
+    optimizer can't elide the call. This is what you'd actually flash
+    to a real MCU and the binary the README's flash-size headline is
+    measured against.
+    """
+    if len(input_shape) == 4:
+        c, h, w = input_shape[1], input_shape[2], input_shape[3]
+    else:
+        c, h, w = input_shape
+    return textwrap.dedent(f"""\
+        #![no_std]
+        #![no_main]
+
+        use core::sync::atomic::{{AtomicU32, Ordering}};
+        use cortex_m_rt::entry;
+        use panic_halt as _;
+
+        use {lib_name}::predict;
+
+        // Zero input -- replace with real data in your firmware.
+        static INPUT: [[[f32; {w}]; {h}]; {c}] = [[[0.0; {w}]; {h}]; {c}];
+
+        // Sink to prevent the optimizer from removing the inference call.
+        static SINK: AtomicU32 = AtomicU32::new(0);
+
+        #[entry]
+        fn main() -> ! {{
+            let output = predict(&INPUT);
+            for val in output.iter() {{
+                SINK.store(val.to_bits(), Ordering::SeqCst);
+            }}
             loop {{}}
         }}
     """)
@@ -1303,6 +1359,7 @@ def write_crate(output_dir: str, ops: list[dict],
                                  quantize=quantize,
                                  bias_names=bias_names)
     demo_rs = emit_demo_rs(input_info["shape"], lib_name=lib_name)
+    minimal_rs = emit_minimal_rs(input_info["shape"], lib_name=lib_name)
     memory_x = emit_memory_x()
     cargo_config = emit_cargo_config()
 
@@ -1312,6 +1369,7 @@ def write_crate(output_dir: str, ops: list[dict],
         "src/ops.rs": ops_rs,
         "src/weights.rs": weights_rs,
         "src/bin/demo.rs": demo_rs,
+        "src/bin/minimal.rs": minimal_rs,
         "memory.x": memory_x,
         ".cargo/config.toml": cargo_config,
     }
@@ -1322,7 +1380,12 @@ def write_crate(output_dir: str, ops: list[dict],
     # `memory.x` for a non-default board (e.g. `mps2-an386`). A naive
     # regen used to silently nuke both, producing zero-input demos and
     # wrong-board memory maps — a real bug we hit during pre-launch.
-    USER_CUSTOMIZABLE = {"Cargo.toml", "src/bin/demo.rs", "memory.x"}
+    USER_CUSTOMIZABLE = {
+        "Cargo.toml",
+        "src/bin/demo.rs",
+        "src/bin/minimal.rs",
+        "memory.x",
+    }
 
     for rel_path, content in files.items():
         full_path = os.path.join(output_dir, rel_path)

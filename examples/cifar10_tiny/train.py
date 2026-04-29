@@ -25,13 +25,22 @@ Architecture (all stride-1 Conv2d, all 2x2 stride-2 MaxPool, no BatchNorm):
 """
 
 import os
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
+
+# Pin all RNGs so accuracy reproduces byte-identical across runs.
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 SCRIPT_DIR = Path(__file__).parent
 

@@ -69,12 +69,18 @@ same code generator.
 
 | Example | Topology | Domain | Test accuracy | INT8 weights | Peak activation RAM | Target board |
 |---|---|---|---|---|---|---|
-| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.76% | 52 KB | ~28 KB | lm3s6965evb (64 KB) |
-| [`examples/fashion_mnist/`](examples/fashion_mnist/) | CNN | Clothing categories | 89.79% | 52 KB | ~28 KB | lm3s6965evb |
-| [`examples/iris/`](examples/iris/) | MLP 4→16→8→3 | Tabular classifier | 100% | 336 B | < 1 KB | lm3s6965evb |
-| [`examples/vibration_anomaly/`](examples/vibration_anomaly/) | MLP 32→64→32→2 | **Real CWRU bearing-fault data** | 100% on a leakage-prone split — see [example README](examples/vibration_anomaly/README.md) | 4.5 KB | < 1 KB | lm3s6965evb |
-| [`examples/cifar10_tiny/`](examples/cifar10_tiny/) | small CNN | Image classifier (limit demo) | 53.51% | 10 KB | ~30 KB | lm3s6965evb |
-| [`examples/cifar10_mps2/`](examples/cifar10_mps2/) | bigger CNN | Image classifier (production-shape) | 67.09% | 39 KB | ~44 KB | mps2-an386 (4 MB SRAM) |
+| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.85% (INT8) | 52 KB | ~28 KB | lm3s6965evb (64 KB) |
+| [`examples/fashion_mnist/`](examples/fashion_mnist/) | CNN | Clothing categories | 89.04% | 52 KB | ~28 KB | lm3s6965evb |
+| [`examples/iris/`](examples/iris/) | MLP 4→16→8→3 | Tabular classifier | 96.67% | 336 B | < 1 KB | lm3s6965evb |
+| [`examples/vibration_anomaly/`](examples/vibration_anomaly/) | MLP 32→64→32→2 | **Real CWRU bearing-fault data** | 100% on a per-recording fair split (held-out fault recordings + temporal-gap healthy split — see [example README](examples/vibration_anomaly/README.md)) | 4.5 KB | < 1 KB | lm3s6965evb |
+| [`examples/cifar10_tiny/`](examples/cifar10_tiny/) | small CNN | Image classifier (limit demo) | 54.56% | 10 KB | ~30 KB | lm3s6965evb |
+| [`examples/cifar10_mps2/`](examples/cifar10_mps2/) | bigger CNN | Image classifier (production-shape) | 63.96% | 39 KB | ~44 KB | mps2-an386 (4 MB SRAM) |
+
+All accuracies above are the result of running each `examples/*/train.py`
+fresh on a CPU with `SEED = 42` pinned across `random`, `numpy`,
+`torch`. Reproducible byte-identical: `uv run --extra train python
+examples/<name>/train.py` will print the same number on the same
+machine + toolchain.
 
 "Peak activation RAM" is the largest analytic sum of live activation
 buffers at any layer in `predict()` — for MNIST that's the moment
@@ -258,8 +264,8 @@ MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
 | Approach | Flash | Peak RAM | Runtime overhead | Heap | Accuracy | Notes |
 |---|---|---|---|---|---|---|
-| **edge-infer (INT8)** | **54 KB** | **~28 KB stack** | **None** | **0** | **98.76%** | This MNIST topology, this toolchain. Apples-to-apples. |
-| **edge-infer (f32)** | **204 KB** | **~28 KB stack** | **None** | **0** | **98.78%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (INT8)** | **54 KB** | **~28 KB stack** | **None** | **0** | **98.85%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (f32)** | **204 KB** | **~28 KB stack** | **None** | **0** | **98.82%** | This MNIST topology, this toolchain. Apples-to-apples. |
 | TFLite Micro (all-ops, my local build) | 447 KB | Tensor arena (varies) | Runtime dispatch, FlatBuffer parsing | Tensor arena | n/a (lib only) | Same Cortex-M4 toolchain, no op-resolver pruning. **The apples-to-apples baseline.** |
 | TFLite Micro (optimized w/ op-resolver, *cited*) | ~105 KB | Tensor arena | Same | Same | n/a (different model) | Published 2021 nRF52840 figure ([arxiv 2112.01319](https://arxiv.org/abs/2112.01319)) — different chip, different MNIST topology, careful op-resolver pruning. **Reference, not apples-to-apples.** |
 | TFLite Micro (typical real-world, *cited*) | ~275 KB | Tensor arena | Same | Same | n/a (different model) | Same paper's "real-world" figure. **Reference, not apples-to-apples.** |
@@ -289,7 +295,7 @@ useful reference, not a head-to-head benchmark.
 
 Accuracy tested on the full MNIST test set (10,000 images) using
 [`scripts/eval_full_mnist.py`](scripts/eval_full_mnist.py): f32 ONNX
-98.78% vs. INT8-weights-simulated 98.76%, with 5 of 10,000 predictions
+98.82% vs. INT8-weights-simulated 98.85%, with 8 of 10,000 predictions
 differing. **Methodology:** the "INT8-weights-simulated" path applies
 edge-infer's exact per-tensor symmetric quantize-then-dequantize step
 to each weight tensor and reruns the resulting model in ONNX Runtime

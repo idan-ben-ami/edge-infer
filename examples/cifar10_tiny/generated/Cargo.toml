@@ -11,14 +11,21 @@ name = "demo"
 path = "src/bin/demo.rs"
 required-features = ["demo"]
 
+[[bin]]
+name = "minimal"
+path = "src/bin/minimal.rs"
+required-features = ["minimal"]
+
 [features]
 demo = ["dep:cortex-m", "dep:cortex-m-rt", "dep:cortex-m-semihosting", "dep:panic-semihosting"]
+minimal = ["dep:cortex-m", "dep:cortex-m-rt", "dep:panic-halt"]
 
 [dependencies]
 cortex-m = { version = "0.7", optional = true }
 cortex-m-rt = { version = "0.7", optional = true }
 cortex-m-semihosting = { version = "0.5", optional = true }
 panic-semihosting = { version = "0.6", optional = true }
+panic-halt = { version = "1", optional = true }
 
 [profile.release]
 opt-level = "z"

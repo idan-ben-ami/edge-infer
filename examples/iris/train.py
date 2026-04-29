@@ -12,11 +12,20 @@ The Iris dataset (Fisher, 1936) is in the public domain. We embed all
 extra dependencies (sklearn is intentionally not imported).
 """
 
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+
+# Pin all RNGs so accuracy reproduces byte-identical across runs.
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
 
 SCRIPT_DIR = Path(__file__).parent
 
@@ -114,8 +123,6 @@ class IrisMLP(nn.Module):
 
 
 def train():
-    torch.manual_seed(0)
-
     # Split deterministically: stratified 80/20. Within each class the first
     # 40 go to train and the last 10 to test (classes are stored in 50-row
     # blocks in the canonical Iris ordering).
