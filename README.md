@@ -390,6 +390,39 @@ ops ship as models demand them.
 > folds into the preceding `Conv`. Otherwise BN appears in the ONNX
 > graph and edge-infer rejects it.
 
+## When edge-infer is the wrong tool
+
+A few cases where you should use something else. Better to find out now
+than an hour into a Cargo build.
+
+- **You're targeting Linux / Cortex-A / x86 — anything with an OS.** Use
+  [ONNX Runtime](https://onnxruntime.ai/), [Apache TVM](https://tvm.apache.org/),
+  or [LiteRT](https://ai.google.dev/edge/litert). Compile-time model
+  embedding pays for itself by killing the runtime; if you already have
+  a kernel, the savings vanish.
+- **Your model has dynamic shapes or runtime-variable input dimensions.**
+  edge-infer bakes shapes as const generics. Variable batch sizes, ragged
+  sequences, and shape-inferred-from-data tensors don't fit. A runtime
+  interpreter (TFLite Micro, ONNX Runtime) is the right choice.
+- **Your model is much larger than ~500K parameters.** Even with INT8
+  weights, 500K params ≈ 500 KB of flash, before any code. Most MCU-class
+  chips below the H7 / nRF53 don't have that. For big-model-on-small-MCU,
+  look at pruning + sparse runtimes (Neural Magic SparseML → TFLM).
+- **You need over-the-air model updates without reflashing firmware.**
+  edge-infer compiles weights as `const` arrays — to swap the model you
+  reflash. If your product ships OTA model updates separate from firmware,
+  store a `.tflite` in flash and use TFLite Micro to load it at boot.
+- **Your target has an NPU / NN accelerator** (Arm Ethos-U55/U85, STM32N6,
+  ESP32-P4 NN, Kendryte K210/K230). edge-infer is CPU-only. The vendor
+  toolchain (Vela for Ethos, ST.AI for N6, ESP-DL, NNCase) will run NN
+  ops 10–100× faster than the CPU path.
+- **You need detection, segmentation, sequence, or generative models.**
+  v0 is built around classification (CNN + MLP). YOLO/SSD, U-Net,
+  audio-sequence, anything that isn't "input → logits" needs codegen
+  patterns that aren't in v0.
+
+If you're still here — you're probably in scope. Move on.
+
 ## If your model doesn't compile
 
 That's the most useful feedback edge-infer can get. Op support is **demand-driven** — the most-requested ops ship next, in order.
