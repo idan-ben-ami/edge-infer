@@ -67,14 +67,14 @@ mps2-an386 4 MB SRAM ceilings. They cover image classification, tabular
 classification, and fault detection. All run end-to-end through the
 same code generator.
 
-| Example | Topology | Domain | Test accuracy | INT8 weights | Peak activation RAM | Target board |
+| Example | Topology | Domain | Test accuracy | INT8 weights | Peak stack (measured) | Target board |
 |---|---|---|---|---|---|---|
-| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.85% (INT8) | 52 KB | ~28 KB | lm3s6965evb (64 KB) |
-| [`examples/fashion_mnist/`](examples/fashion_mnist/) | CNN | Clothing categories | 89.04% | 52 KB | ~28 KB | lm3s6965evb |
-| [`examples/iris/`](examples/iris/) | MLP 4→16→8→3 | Tabular classifier | 96.67% | 336 B | < 1 KB | lm3s6965evb |
-| [`examples/vibration_anomaly/`](examples/vibration_anomaly/) | MLP 32→64→32→2 | **Real CWRU bearing-fault data** | 100% on a per-recording fair split (held-out fault recordings + temporal-gap healthy split — see [example README](examples/vibration_anomaly/README.md)) | 4.5 KB | < 1 KB | lm3s6965evb |
-| [`examples/cifar10_tiny/`](examples/cifar10_tiny/) | small CNN | Image classifier (limit demo) | 54.56% | 10 KB | ~30 KB | lm3s6965evb |
-| [`examples/cifar10_mps2/`](examples/cifar10_mps2/) | bigger CNN | Image classifier (production-shape) | 63.96% | 39 KB | ~44 KB | mps2-an386 (4 MB SRAM) |
+| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.85% (INT8) | 52 KB | 47 KB | lm3s6965evb (64 KB) |
+| [`examples/fashion_mnist/`](examples/fashion_mnist/) | CNN | Clothing categories | 89.04% | 52 KB | 47 KB | lm3s6965evb |
+| [`examples/iris/`](examples/iris/) | MLP 4→16→8→3 | Tabular classifier | 96.67% | 336 B | ≤ 256 B | lm3s6965evb |
+| [`examples/vibration_anomaly/`](examples/vibration_anomaly/) | MLP 32→64→32→2 | **Real CWRU bearing-fault data** | 100% on a per-recording fair split (held-out fault recordings + temporal-gap healthy split — see [example README](examples/vibration_anomaly/README.md)) | 4.5 KB | 416 B | lm3s6965evb |
+| [`examples/cifar10_tiny/`](examples/cifar10_tiny/) | small CNN | Image classifier (limit demo) | 54.56% | 10 KB | 20 KB | lm3s6965evb |
+| [`examples/cifar10_mps2/`](examples/cifar10_mps2/) | bigger CNN | Image classifier (production-shape) | 63.96% | 39 KB | 72 KB | mps2-an386 (4 MB SRAM) |
 
 All accuracies above are the result of running each `examples/*/train.py`
 fresh on a CPU with `SEED = 42` pinned across `random`, `numpy`,
@@ -82,16 +82,22 @@ fresh on a CPU with `SEED = 42` pinned across `random`, `numpy`,
 examples/<name>/train.py` will print the same number on the same
 machine + toolchain.
 
-"Peak activation RAM" is the largest analytic sum of live activation
-buffers at any layer in `predict()` — for MNIST that's the moment
-`conv1_out` (8×28×28 f32 = 25 KB) is alive together with the input
-(3 KB). The actual on-device peak is this number plus stack frames /
-saved registers (small) — `cargo size` + the linker map give the tight
-empirical number once a binary is flashed. Heap usage is zero; all
-buffers are stack-allocated. The MNIST CNN's 28 KB activation peak on
-the lm3s6965evb's 64 KB SRAM is the reason CIFAR-10 needs the
-shrunk-to-fit `cifar10_tiny` variant or a 4 MB-SRAM board for the
-full-resolution version.
+"Peak stack (measured)" is the real high-water mark from running
+each example's generated `stack_probe` binary on QEMU (which emulates
+RAM correctly, so the number matches silicon). Reproduce with
+`cargo run --bin stack_probe --features demo --release`. Methodology
+and per-example breakdown in [BENCHMARKS.md](BENCHMARKS.md#peak-stack-usage-real-measured).
+Heap usage is zero across the board — all buffers are stack-allocated.
+
+A note on the MNIST 47 KB number: an earlier draft of this table said
+"~28 KB" computed as the largest *single-layer* live activation pair.
+That was wrong — Rust doesn't reuse stack slots across `let mut`
+declarations even with LTO, so the real footprint is the **sum** of
+all activation buffers. Optimizing the codegen to reuse slots across
+non-overlapping buffer lifetimes is on the post-launch roadmap; until
+then, treat 47 KB as the honest number for this topology. It's why
+cifar10_mps2 doesn't fit on the 64 KB lm3s6965evb (72 KB needed) and
+needs the 4 MB SRAM mps2-an386 board.
 
 All generated `predict()` functions are browsable on GitHub without compiling —
 e.g. [`examples/vibration_anomaly/generated/src/lib.rs`](examples/vibration_anomaly/generated/src/lib.rs)
@@ -242,10 +248,13 @@ your toolchain supports. Verified on two QEMU machines:
 | `lm3s6965evb` (Stellaris, Cortex-M3) | 64 KB | MNIST, Fashion-MNIST, Iris, vibration anomaly, CIFAR-10 (tiny) | The smallest realistic ML target — what you'd use to prove "yes, it really fits." QEMU's `-cpu cortex-m4` overrides the machine default to host the M4F firmware target. |
 | `mps2-an386` (Cortex-M4) | 4 MB code + 4 MB data | All of the above + full-size CIFAR-10 | Project uses SSRAM1 (4 MB FLASH at `0x00000000`) + SSRAM2 (4 MB RAM at `0x20000000`); the board also exposes a 16 MB PSRAM region we don't currently link. Better proxy for an STM32F4/F7/H7 / nRF53 / ESP32-S3-class deployment. |
 
-The full-size CIFAR-10 model (39 K params, ~32 KB peak activation) does
-not fit in 64 KB SRAM. Two CIFAR-10 examples ship to make the trade-off
-explicit: shrink to fit (`cifar10_tiny`, ~10K params, 53% accuracy) or
-move to a board sized for real ML (`cifar10_mps2`, full model, 67%).
+The full-size CIFAR-10 model (39 K params, **72 KB measured stack**)
+exceeds the lm3s6965evb's 64 KB SRAM entirely — measured by running
+`stack_probe` on the mps2-an386 (which has the headroom). Two CIFAR-10
+examples ship to make the trade-off explicit: shrink to fit
+(`cifar10_tiny`, ~10K params, 20 KB stack, 55% accuracy) or move to a
+board sized for real ML (`cifar10_mps2`, full model, 64% accuracy on
+4 MB SRAM).
 
 > **Why M3 silicon executing M4F firmware in QEMU is fine:** the
 > `lm3s6965evb` chip is Cortex-M3, but QEMU's `-cpu cortex-m4` flag
@@ -264,8 +273,8 @@ MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
 | Approach | Flash | Peak RAM | Runtime overhead | Heap | Accuracy | Notes |
 |---|---|---|---|---|---|---|
-| **edge-infer (INT8)** | **54 KB** | **~28 KB stack** | **None** | **0** | **98.85%** | This MNIST topology, this toolchain. Apples-to-apples. |
-| **edge-infer (f32)** | **204 KB** | **~28 KB stack** | **None** | **0** | **98.82%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (INT8)** | **54 KB** | **47 KB stack (measured)** | **None** | **0** | **98.85%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (f32)** | **204 KB** | **47 KB stack (measured)** | **None** | **0** | **98.82%** | This MNIST topology, this toolchain. Apples-to-apples. |
 | TFLite Micro (all-ops, my local build) | 447 KB | Tensor arena (varies) | Runtime dispatch, FlatBuffer parsing | Tensor arena | n/a (lib only) | Same Cortex-M4 toolchain, no op-resolver pruning. **The apples-to-apples baseline.** |
 | TFLite Micro (optimized w/ op-resolver, *cited*) | ~105 KB | Tensor arena | Same | Same | n/a (different model) | Published 2021 nRF52840 figure ([arxiv 2112.01319](https://arxiv.org/abs/2112.01319)) — different chip, different MNIST topology, careful op-resolver pruning. **Reference, not apples-to-apples.** |
 | TFLite Micro (typical real-world, *cited*) | ~275 KB | Tensor arena | Same | Same | n/a (different model) | Same paper's "real-world" figure. **Reference, not apples-to-apples.** |

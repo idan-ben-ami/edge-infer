@@ -16,6 +16,16 @@ name = "minimal"
 path = "src/bin/minimal.rs"
 required-features = ["minimal"]
 
+[[bin]]
+name = "cycles"
+path = "src/bin/cycles.rs"
+required-features = ["demo"]
+
+[[bin]]
+name = "stack_probe"
+path = "src/bin/stack_probe.rs"
+required-features = ["demo"]
+
 [features]
 demo = ["dep:cortex-m", "dep:cortex-m-rt", "dep:cortex-m-semihosting", "dep:panic-semihosting"]
 minimal = ["dep:cortex-m", "dep:cortex-m-rt", "dep:panic-halt"]

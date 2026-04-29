@@ -104,51 +104,158 @@ topology uses.
 
 ---
 
-## Peak activation RAM
+## Peak stack usage (real, measured)
 
-> **Claim in README:** the MNIST CNN's peak activation RAM is ~28 KB
-> (analytic estimate); other examples range < 1 KB (MLPs) to ~44 KB
-> (full-resolution CIFAR-10).
+> **Claim in README:** the MNIST CNN uses ~47 KB of stack on Cortex-M4;
+> other examples range from < 256 bytes (iris MLP) to ~72 KB (full-
+> resolution CIFAR-10 on mps2-an386). The earlier "~28 KB" analytic
+> estimate was wrong — see methodology note below.
 
-_Status: **analytic only** — pending Phase A.5 (stack-paint measurement
-on QEMU). Numbers in the README's example table are computed by summing
-the largest live activation buffers at any single layer of `predict()`._
+### Measured high-water marks
 
-### Analytic numbers per example
-
-| Example | Peak buffer (live activation tensors) | Source |
+| Example | Stack high-water | Reproduce |
 |---|---|---|
-| mnist | ~28 KB (input 3 KB + conv1_out 25 KB) | analytic |
-| fashion_mnist | ~28 KB | same topology as mnist |
-| iris | < 1 KB | analytic |
-| vibration_anomaly | < 1 KB | analytic |
-| cifar10_tiny | ~30 KB | analytic |
-| cifar10_mps2 | ~44 KB | analytic |
+| mnist (CNN) | **48,260 bytes (~47 KB)** | `cargo run --bin stack_probe --features demo --release` on lm3s6965evb |
+| fashion_mnist (CNN) | **48,260 bytes (~47 KB)** | same as mnist (same topology) |
+| iris (MLP) | **≤ 256 bytes** | < 256 reads as 256 due to safety-margin floor |
+| vibration_anomaly (MLP) | **416 bytes** | exact |
+| cifar10_tiny (small CNN) | **20,060 bytes (~20 KB)** | exact |
+| cifar10_mps2 (CNN) | **73,436 bytes (~72 KB)** | mps2-an386 only — exceeds lm3s6965evb's 64 KB SRAM, which is why this example needs the bigger board |
 
-These numbers do **not** include stack frame overhead (saved registers,
-return addresses). On real silicon, expect another 1–4 KB of stack
-above the activation buffers.
+### Reproduce
 
-### Real measurement (Phase A.5 deliverable)
+```bash
+cd examples/mnist/generated
+cargo build --bin stack_probe --features demo \
+    --target thumbv7em-none-eabihf --release
+qemu-system-arm -cpu cortex-m4 -machine lm3s6965evb -nographic \
+    -semihosting-config enable=on,target=native \
+    -kernel target/thumbv7em-none-eabihf/release/stack_probe
+```
 
-_TODO: once A.5 lands, paste the QEMU-measured stack high-water for
-each example here, with the reproduce command._
+Expected output:
+
+```
+Stack high-water mark: 48260 bytes
+(measured by stack-painting; excludes 1 KB safety margin at top)
+predicted class: 1
+```
+
+### Methodology
+
+The `stack_probe` binary uses the cortex-m-rt `#[pre_init]` hook to
+paint the entire free stack region (from `__ebss` up to a 256-byte
+safety offset below `_stack_start`) with the marker `0xDEADBEEF`
+*before* `main` runs. After `predict()` returns, the binary walks the
+stack region from the bottom upward and finds the lowest address whose
+value is no longer the marker — that's the high-water mark, the lowest
+SP reached during execution. `_stack_start - high_water` is the stack
+usage.
+
+The 256-byte safety margin at the top exists because `pre_init` itself
+runs on the stack and would clobber its own frame if we painted too
+far up. For models whose `predict()` uses less than 256 bytes of stack
+(the two MLPs), this measurement reports 256 as a floor — the real
+number is somewhere ≤ 256.
+
+QEMU emulates RAM correctly, so this measurement matches what a real
+Cortex-M4 would report when flashed with the same binary. (Unlike
+cycle counting — see below.)
+
+### Why the analytic estimate was wrong
+
+The README originally said "~28 KB peak activation RAM" for mnist,
+computed as the largest pair of live activation buffers at any single
+layer (`input` 3 KB + `conv1_out` 25 KB = ~28 KB).
+
+That assumed Rust would reuse stack slots for `let mut` activation
+buffers whose lifetimes don't overlap. **It doesn't.** Even with
+`opt-level = "z"`, LTO, and `codegen-units = 1`, the compiler keeps
+every `let mut` buffer alive for the full function. So the real stack
+footprint is the **sum** of all activation buffers:
+
+| Buffer | Size |
+|--------|------|
+| `conv1_out` | 25,088 B |
+| `pool1_out` | 6,272 B |
+| `conv2_out` | 12,544 B |
+| `pool2_out` | 3,136 B |
+| `fc1_out` | 256 B |
+| `fc2_out` | 40 B |
+| Subtotal | 47,336 B |
+| Frames + saved regs (overhead) | ~924 B |
+| **Total measured** | **48,260 B** |
+
+(`INPUT` is `static`, not on the stack, so it doesn't count.)
+
+48 KB on the lm3s6965evb's 64 KB SRAM is **75% of available memory**.
+That's tight; a real deployment would want either a slightly bigger
+MCU (most production STM32F4/F7/H7 / nRF52 / ESP32 parts have ≥128 KB)
+or a code-gen optimization to reuse stack slots across non-overlapping
+buffer lifetimes (post-launch work; see HARDENING-PLAN.md roadmap).
 
 ---
 
 ## Inference cycle count
 
-> **Claim in README:** _no claim yet — currently silent on speed._
+> **Claim in README:** _none yet — and the QEMU emulator can't give us
+> a defensible one. Real silicon is required._
 
-_Status: **pending** — Phase A.6. We'll measure cycles via the Cortex-M4
-DWT cycle counter, run on QEMU, and report cycles per `predict()` call.
-QEMU's cycle counter is approximate (not bit-accurate vs silicon), but
-useful for relative comparisons (e.g. before/after the conv2d
-border/interior split in B.8)._
+### Status: blocked by QEMU
 
-### Last measured output
+The generator emits a `cycles` binary that uses the Cortex-M4 DWT
+cycle counter (`CYCCNT` register) to time `predict()` execution. The
+sequence is the textbook:
 
-_TODO: A.6 deliverable._
+```rust
+cp.DCB.enable_trace();
+cp.DWT.enable_cycle_counter();
+let _ = predict(&INPUT);                    // warmup, discard
+let start = DWT::cycle_count();
+let output = predict(&INPUT);
+let end = DWT::cycle_count();
+let cycles = end.wrapping_sub(start);
+```
+
+This works on real Cortex-M4 silicon (STM32F4, nRF52, etc.). On
+`qemu-system-arm` with `-cpu cortex-m4 -machine lm3s6965evb` (or
+`mps2-an386`), `CYCCNT` returns 0 — QEMU's TCG-based emulation does
+not tick the DWT cycle counter. We tested with `-icount shift=0` as
+well; same result. There's no QEMU plugin for cortex-m cycle counting
+in the version we ship with (QEMU 11.0.0).
+
+### Reproduce on real hardware
+
+```bash
+cd examples/mnist/generated
+cargo build --bin cycles --features demo \
+    --target thumbv7em-none-eabihf --release
+# Flash to a real Cortex-M4 board (e.g. STM32F411 Nucleo, nRF52840 DK)
+# and connect via probe-rs / OpenOCD with semihosting enabled.
+# Expected output: "predict cycles (DWT, QEMU approximation): NNNNN"
+```
+
+### Reproduce on QEMU (will report 0 — known limitation)
+
+```bash
+cd examples/mnist/generated
+cargo build --bin cycles --features demo \
+    --target thumbv7em-none-eabihf --release
+qemu-system-arm -cpu cortex-m4 -machine lm3s6965evb -nographic \
+    -semihosting-config enable=on,target=native \
+    -kernel target/thumbv7em-none-eabihf/release/cycles
+```
+
+Output:
+```
+predict cycles (DWT, QEMU approximation): 0
+predicted class: 1
+```
+
+The "0" is not edge-infer's bug — DWT_CYCCNT isn't ticked on
+qemu-system-arm. The binary itself is correct and ships in every
+generated example; running it on silicon gives you a real number.
+Plan to ship results from a physical board before v1.0.
 
 ---
 

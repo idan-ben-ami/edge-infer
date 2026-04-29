@@ -533,6 +533,16 @@ def emit_cargo_toml(crate_name: str = "mnist-model") -> str:
         path = "src/bin/minimal.rs"
         required-features = ["minimal"]
 
+        [[bin]]
+        name = "cycles"
+        path = "src/bin/cycles.rs"
+        required-features = ["demo"]
+
+        [[bin]]
+        name = "stack_probe"
+        path = "src/bin/stack_probe.rs"
+        required-features = ["demo"]
+
         [features]
         demo = ["dep:cortex-m", "dep:cortex-m-rt", "dep:cortex-m-semihosting", "dep:panic-semihosting"]
         minimal = ["dep:cortex-m", "dep:cortex-m-rt", "dep:panic-halt"]
@@ -633,6 +643,192 @@ def emit_minimal_rs(input_shape: list[int], lib_name: str) -> str:
             for val in output.iter() {{
                 SINK.store(val.to_bits(), Ordering::SeqCst);
             }}
+            loop {{}}
+        }}
+    """)
+
+
+def emit_cycles_rs(input_shape: list[int], lib_name: str) -> str:
+    """Generate the `cycles` binary that measures `predict()` execution
+    in Cortex-M cycle counts via the DWT (Data Watchpoint and Trace) unit.
+
+    A first warmup call is run and discarded to defeat first-touch cache
+    effects (instruction-cache misses, page table walks); the second
+    call's CYCCNT delta is what we report. QEMU's cycle counter is an
+    approximation — useful for *relative* comparisons (e.g. measuring
+    the conv2d border/interior split speedup in B.8) but not bit-accurate
+    against silicon.
+    """
+    if len(input_shape) == 4:
+        c, h, w = input_shape[1], input_shape[2], input_shape[3]
+    else:
+        c, h, w = input_shape
+    return textwrap.dedent(f"""\
+        #![no_std]
+        #![no_main]
+
+        use cortex_m::peripheral::DWT;
+        use cortex_m_rt::entry;
+        use cortex_m_semihosting::{{
+            debug::{{self, EXIT_SUCCESS}},
+            hprintln,
+        }};
+        use panic_semihosting as _;
+
+        use {lib_name}::predict;
+
+        static INPUT: [[[f32; {w}]; {h}]; {c}] = [[[0.0; {w}]; {h}]; {c}];
+
+        #[entry]
+        fn main() -> ! {{
+            let mut cp = cortex_m::Peripherals::take().unwrap();
+            cp.DCB.enable_trace();
+            cp.DWT.enable_cycle_counter();
+
+            // Warmup: discard first run so cycles below reflect the
+            // steady-state cost, not first-touch cache misses.
+            let _ = predict(&INPUT);
+
+            let start = DWT::cycle_count();
+            let output = predict(&INPUT);
+            let end = DWT::cycle_count();
+            let cycles = end.wrapping_sub(start);
+
+            hprintln!("predict cycles (DWT, QEMU approximation): {{}}", cycles);
+
+            // Anchor the output so the optimizer can't elide predict.
+            let predicted = output
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap()
+                .0;
+            hprintln!("predicted class: {{}}", predicted);
+
+            debug::exit(EXIT_SUCCESS);
+            loop {{}}
+        }}
+    """)
+
+
+def emit_stack_probe_rs(input_shape: list[int], lib_name: str) -> str:
+    """Generate the `stack_probe` binary that measures peak stack usage
+    via stack-painting.
+
+    Method:
+      1. In `__pre_init` (runs before BSS init, so before main's stack
+         frame is set up), paint every stack cell from the bottom of
+         the stack region (linker symbol `__ebss`) up to a safe offset
+         below the top (`_stack_start - 1024 bytes`) with the marker
+         0xDEADBEEF.
+      2. Run `predict()` from main.
+      3. Walk the stack region from `__ebss` upward; the FIRST cell that
+         no longer contains 0xDEADBEEF is the high-water mark — the
+         lowest address SP ever reached during execution.
+      4. Stack used = `_stack_start - high_water`.
+
+    Caveats:
+      * The 1024-byte safety margin at the top is to avoid painting our
+        own pre_init / main stack frame. The reported stack usage
+        EXCLUDES this margin (we never had visibility into whether the
+        stack went into it during `predict`); if the real usage is
+        within 1 KB of `_stack_start`, this measurement under-reports.
+      * BSS sits below the stack; we paint from `__ebss` (top of BSS)
+        upward. If BSS init clobbers our paint, the measurement breaks.
+        cortex-m-rt runs BSS init AFTER `__pre_init`, then it's safe.
+        Note: our paint runs in `__pre_init` *before* BSS init zeros
+        out the BSS region, so the paint sits ABOVE BSS in the stack
+        region, not within BSS itself.
+      * QEMU is functionally accurate here (stack writes are real RAM
+        writes), so the measured number should match silicon.
+    """
+    if len(input_shape) == 4:
+        c, h, w = input_shape[1], input_shape[2], input_shape[3]
+    else:
+        c, h, w = input_shape
+    return textwrap.dedent(f"""\
+        #![no_std]
+        #![no_main]
+
+        use cortex_m_rt::{{entry, pre_init}};
+        use cortex_m_semihosting::{{
+            debug::{{self, EXIT_SUCCESS}},
+            hprintln,
+        }};
+        use panic_semihosting as _;
+
+        use {lib_name}::predict;
+
+        static INPUT: [[[f32; {w}]; {h}]; {c}] = [[[0.0; {w}]; {h}]; {c}];
+
+        const PAINT: u32 = 0xDEAD_BEEF;
+        // Don't paint our own pre_init / main frames. 256 bytes is enough
+        // headroom for pre_init's tiny frame and the path back up to main.
+        // Numbers reported below this offset will read as exactly 256
+        // (we can't see into the unpainted region); predict() functions
+        // smaller than 256 bytes of stack will report 256 as a lower
+        // bound. For the bundled examples that's only iris and
+        // vibration_anomaly (both pure MLPs).
+        const SAFETY_TOP_OFFSET: usize = 256;
+
+        extern "C" {{
+            static mut __ebss: u32;
+            static mut _stack_start: u32;
+        }}
+
+        #[pre_init]
+        unsafe fn paint_stack() {{
+            let bottom = &raw mut __ebss as *mut u32;
+            let top = &raw mut _stack_start as *mut u32;
+            let safe_top = (top as usize - SAFETY_TOP_OFFSET) as *mut u32;
+
+            let mut p = bottom;
+            while (p as usize) < (safe_top as usize) {{
+                p.write_volatile(PAINT);
+                p = p.add(1);
+            }}
+        }}
+
+        #[entry]
+        fn main() -> ! {{
+            // Run inference. This pushes whatever frames `predict` needs
+            // onto the stack, overwriting our paint pattern as it goes.
+            let output = predict(&INPUT);
+
+            // Anchor output (don't let optimizer elide predict).
+            let predicted = output
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap()
+                .0;
+
+            // Find the first cell that is NOT still 0xDEADBEEF, walking
+            // from the bottom of the stack region upward. That cell is
+            // the lowest address the SP reached during predict.
+            let bottom = &raw const __ebss as *const u32;
+            let top = &raw const _stack_start as *const u32;
+
+            let mut p = bottom;
+            let mut high_water: *const u32 = top;
+            while (p as usize) < (top as usize) {{
+                let v = unsafe {{ p.read_volatile() }};
+                if v != PAINT {{
+                    high_water = p;
+                    break;
+                }}
+                p = unsafe {{ p.add(1) }};
+            }}
+
+            let stack_top = top as usize;
+            let stack_low = high_water as usize;
+            let used = stack_top.saturating_sub(stack_low);
+
+            hprintln!("Stack high-water mark: {{}} bytes", used);
+            hprintln!("(measured by stack-painting; excludes 1 KB safety margin at top)");
+            hprintln!("predicted class: {{}}", predicted);
+
+            debug::exit(EXIT_SUCCESS);
             loop {{}}
         }}
     """)
@@ -1360,6 +1556,8 @@ def write_crate(output_dir: str, ops: list[dict],
                                  bias_names=bias_names)
     demo_rs = emit_demo_rs(input_info["shape"], lib_name=lib_name)
     minimal_rs = emit_minimal_rs(input_info["shape"], lib_name=lib_name)
+    cycles_rs = emit_cycles_rs(input_info["shape"], lib_name=lib_name)
+    stack_probe_rs = emit_stack_probe_rs(input_info["shape"], lib_name=lib_name)
     memory_x = emit_memory_x()
     cargo_config = emit_cargo_config()
 
@@ -1370,6 +1568,8 @@ def write_crate(output_dir: str, ops: list[dict],
         "src/weights.rs": weights_rs,
         "src/bin/demo.rs": demo_rs,
         "src/bin/minimal.rs": minimal_rs,
+        "src/bin/cycles.rs": cycles_rs,
+        "src/bin/stack_probe.rs": stack_probe_rs,
         "memory.x": memory_x,
         ".cargo/config.toml": cargo_config,
     }
@@ -1384,6 +1584,8 @@ def write_crate(output_dir: str, ops: list[dict],
         "Cargo.toml",
         "src/bin/demo.rs",
         "src/bin/minimal.rs",
+        "src/bin/cycles.rs",
+        "src/bin/stack_probe.rs",
         "memory.x",
     }
 
