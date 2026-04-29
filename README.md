@@ -273,6 +273,32 @@ the original mps2 setup; you can edit `memory.x` to retarget any
 > a [bug report](https://github.com/idan-ben-ami/edge-infer/issues/new?template=hardware-test-report.yml)
 > if you want CI verification of that path.
 
+### Sizing memory.x for production silicon
+
+The generated `memory.x` is shaped for QEMU's `lm3s6965evb` (64 KB SRAM,
+256 KB flash). For real hardware, edit it to match your chip — the
+file's header comment lists values for common targets (STM32F4,
+nRF52840, RP2040). The most common deploy footgun is a model whose
+activation buffers don't fit the target's RAM, which manifests as a
+hard-fault inside `predict()`. To prevent that at compile time, every
+generated crate exposes a `PEAK_ACTIVATION_BYTES_UPPER_BOUND` constant —
+the pessimistic sum of all activation buffers. Compare it to your
+chip's free RAM after bss / heap reservation:
+
+```rust
+const RAM_BYTES: usize = 128 * 1024;             // your chip's SRAM
+const RESERVED: usize = 16 * 1024;               // bss + heap + margin
+const _: () = assert!(
+    RAM_BYTES - RESERVED >= my_model::PEAK_ACTIVATION_BYTES_UPPER_BOUND,
+    "model needs more stack than this target has free"
+);
+```
+
+The upper bound ignores lifetime overlap and stack-slot reuse, so the
+real measured high-water mark (run `bin/stack_probe`) is typically
+15–30% lower. For a precise number on your target, run `stack_probe`
+once on QEMU or hardware.
+
 ## Benchmarks
 
 MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:

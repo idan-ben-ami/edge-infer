@@ -5,6 +5,27 @@
 mod ops;
 mod weights;
 
+/// Pessimistic upper bound on the stack memory `predict()` needs
+/// for activation buffers, in bytes. Sum of every activation
+/// tensor declared in the function — does not account for
+/// lifetime overlap or compiler stack-slot reuse, so the real
+/// measured high-water mark (run `bin/stack_probe`) is typically
+/// 15-30% lower than this number.
+///
+/// Use this to safety-check your linker config for production
+/// hardware. Example, for an STM32F411 with 128 KB SRAM:
+///
+/// ```ignore
+/// const RAM_BYTES: usize = 128 * 1024;
+/// const RESERVED_FOR_BSS_AND_HEAP: usize = 16 * 1024;
+/// const _: () = assert!(
+///     RAM_BYTES - RESERVED_FOR_BSS_AND_HEAP
+///     >= generated::PEAK_ACTIVATION_BYTES_UPPER_BOUND,
+///     "model needs more stack than this target's free RAM"
+/// );
+/// ```
+pub const PEAK_ACTIVATION_BYTES_UPPER_BOUND: usize = 47336;
+
 /// Run inference on a single input image.
 ///
 /// Input shape: [1][28][28] (channels, height, width)
