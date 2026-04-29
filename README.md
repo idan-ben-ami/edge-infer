@@ -271,21 +271,32 @@ board sized for real ML (`cifar10_mps2`, full model, 64% accuracy on
 
 MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
-| Approach | Flash | Peak RAM | Runtime overhead | Heap | Accuracy | Notes |
+| Approach | Flash | Peak stack | Runtime overhead | Heap | Accuracy | Notes |
 |---|---|---|---|---|---|---|
-| **edge-infer (INT8)** | **54 KB** | **47 KB stack (measured)** | **None** | **0** | **98.85%** | This MNIST topology, this toolchain. Apples-to-apples. |
-| **edge-infer (f32)** | **204 KB** | **47 KB stack (measured)** | **None** | **0** | **98.82%** | This MNIST topology, this toolchain. Apples-to-apples. |
-| TFLite Micro (all-ops, my local build) | 447 KB | Tensor arena (varies) | Runtime dispatch, FlatBuffer parsing | Tensor arena | n/a (lib only) | Same Cortex-M4 toolchain, no op-resolver pruning. **The apples-to-apples baseline.** |
-| TFLite Micro (optimized w/ op-resolver, *cited*) | ~105 KB | Tensor arena | Same | Same | n/a (different model) | Published 2021 nRF52840 figure ([arxiv 2112.01319](https://arxiv.org/abs/2112.01319)) — different chip, different MNIST topology, careful op-resolver pruning. **Reference, not apples-to-apples.** |
-| TFLite Micro (typical real-world, *cited*) | ~275 KB | Tensor arena | Same | Same | n/a (different model) | Same paper's "real-world" figure. **Reference, not apples-to-apples.** |
+| **edge-infer (INT8)** | **54 KB** | **47 KB (measured)** | **None** | **0** | **98.85%** | This topology, this toolchain. The apples-to-apples row. |
+| **edge-infer (f32)** | **204 KB** | **47 KB (measured)** | **None** | **0** | **98.82%** | Same code generator, no quantization. |
+| TFLite Micro pruned for this MNIST topology (locally built) | **124 KB** | tensor arena (varies) | Interpreter + flatbuffer parse | Tensor arena | 97.65% (cross-framework) | TFLM SHA `51bee03b`, 7-op `MicroMutableOpResolver`, same Cortex-M4+fp target, `-Os --gc-sections`. **The fair head-to-head comparison.** |
+| TFLite Micro all-ops (locally built, every kernel) | 363 KB | tensor arena | Same | Tensor arena | n/a | Same TFLM build, every public `Add*` (118 ops) registered. The "I forgot to prune" worst case. |
 
-The honest comparison: **54 KB vs my own 447 KB all-ops TFLite Micro
-build on the same toolchain** — that's an 8× win on flash, no
-methodology asterisks. The 105 KB and 275 KB rows are external
-reference points (different chip, different MNIST topology), kept in
-the table for context but explicitly marked as cited rather than
-measured. If you want the cleanest apples-to-apples claim, use the
-447 KB row.
+**Honest ratio: edge-infer is ~2.3× smaller than TFLite Micro for this
+specific MNIST topology**, with both binaries built on the same target
+and the same `-Os` release flags. The win comes from eliminating the
+interpreter, flatbuffer parser, schema reader, and tensor allocator —
+not from "smaller weights." Of TFLM's 124 KB, ~58 KB is the embedded
+.tflite model and ~66 KB is the runtime + ops. Of edge-infer's 54 KB,
+~51 KB is weights as `const` arrays and ~3 KB is generated MAC loops.
+
+**Methodology note:** see [BENCHMARKS.md](BENCHMARKS.md#flash-size-tflite-micro-comparison-locally-measured)
+for the full reproduce recipe, TFLM SHA, toolchain versions, and
+caveats (toolchain mismatch — edge-infer uses `arm-none-eabi-gcc 15.2.0`,
+TFLM bundles its own 14.3.Rel1; both `-Os` release with LTO/`--gc-sections`;
+TFLM A.3 binary linked but not yet executed on Cortex-M4 — model
+correctness validated in host Python at 97.65%).
+
+The 6.8× ratio against the all-ops baseline (54 KB vs 363 KB) is
+sometimes worth quoting as "vs the easy/lazy way to ship TFLM," but
+it's a comparison against TFLM's *worst-case* shape, not a fair
+ratio. We won't lead with it.
 
 edge-infer flash numbers measure the `minimal` binary
 (`cargo build --bin minimal --features minimal`), which uses `panic-halt`
@@ -295,12 +306,6 @@ with `arm-none-eabi-size` on the `text + data` columns. The `demo`
 binary used for QEMU below adds ~21 KB of `cortex-m-semihosting` and
 `panic-semihosting` for the host-printable demo output; that's
 debugging convenience, not the firmware-shippable size.
-
-A fully apples-to-apples op-resolver-pruned TFLite Micro build for
-*this* MNIST topology on Cortex-M4 likely lands somewhere between
-80 KB and 150 KB; we haven't measured that locally yet. Unless and
-until that measurement is in this table, treat the 105 KB row as a
-useful reference, not a head-to-head benchmark.
 
 Accuracy tested on the full MNIST test set (10,000 images) using
 [`scripts/eval_full_mnist.py`](scripts/eval_full_mnist.py): f32 ONNX

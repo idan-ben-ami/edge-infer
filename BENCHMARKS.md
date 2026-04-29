@@ -78,29 +78,107 @@ that's debugging convenience, not the firmware-shippable size.
 
 ---
 
-## Flash size — TFLite Micro comparison
+## Flash size — TFLite Micro comparison (locally measured)
 
-> **Claim in README:** edge-infer is meaningfully smaller than TFLite
-> Micro on Cortex-M4 for our specific MNIST topology.
+> **Claim in README:** for our specific MNIST topology, edge-infer's
+> 54 KB INT8 binary is **~2.3× smaller** than TFLite Micro built with
+> only the ops this model needs (124 KB), and **~6.8× smaller** than
+> a TFLite Micro all-ops sanity binary (363 KB).
 
-_Status: **pending** — see Phase A.2 + A.3 in `HARDENING-PLAN.md`.
-Independent agent session (HARDENING-AGENT-A2-A3-PROMPT.md) is doing
-the local TFLM build. Numbers here will be filled in from
-`BENCHMARKS-TFLM-DRAFT.md` once that agent's work is merged._
+The previous README quoted "~447 KB all-ops" without a local build on
+disk to back it. We rebuilt TFLite Micro from source on this machine,
+locally, against the same Cortex-M4+fp target edge-infer ships, and
+got a different number — closer to ~363 KB. The "~105 KB" / "~275 KB"
+figures from the [TinyML Platforms Benchmarking 2021 paper](https://arxiv.org/abs/2112.01319)
+were measured on nRF52840 with a *different* MNIST topology and should
+not be treated as apples-to-apples; we now have our own pruned-resolver
+build for **our** topology and report that instead.
 
-The README currently quotes:
-- 447 KB (claimed local all-ops build) — **unverified**
-- ~105 KB (cited from [arxiv 2112.01319](https://arxiv.org/abs/2112.01319),
-  measured on nRF52840 with a *different* MNIST topology)
-- ~275 KB (same paper)
+### Headline numbers (all measured on Cortex-M4+fp, `-Os --gc-sections`)
 
-Until A.2/A.3 land:
-- 447 KB is **not** independently reproducible from this repo.
-- 105/275 KB are **cited only**; not apples-to-apples for our topology.
+| Approach | Flash (text + data) | Source |
+|---|---|---|
+| **edge-infer INT8** | **54 KB** (text=55,008, data=0) | This repo, `cargo build --bin minimal --features minimal --target thumbv7em-none-eabihf --release` + `arm-none-eabi-size`. |
+| TFLite Micro pruned for our exact MNIST topology | **124 KB** (text=127,256, data=104) | TFLM SHA `51bee03b`, op resolver = `Conv2D + MaxPool2D + FullyConnected + Reshape + Shape + StridedSlice + Pack`, embedded INT8 model = 58 KB, runtime + 7 ops = 66 KB |
+| TFLite Micro all-ops sanity build (every public `Add*`, 118 ops) | **363 KB** (text=371,273, data=108) | Same TFLM SHA / toolchain. Worst-case "I forgot to prune" baseline. |
 
-The fair, defensible apples-to-apples row will be A.3's measurement of
-TFLM with `MicroMutableOpResolver` registering only the ops our MNIST
-topology uses.
+### Honest ratios
+
+- **vs the fair pruned build (A.3): edge-infer is ~2.3× smaller.** This
+  is the ratio that survives a hostile HN comment. It's not 8×.
+- vs the all-ops baseline: 6.8×. That's the bound on "how much TFLM
+  bloat you'd see if you didn't prune the resolver" — useful as
+  context, dishonest as a headline.
+
+### Why the win is real (and why it's smaller than the marketing claimed)
+
+Of the 124 KB pruned TFLM build:
+- ~58 KB is the embedded `.tflite` model file itself (FlatBuffer-encoded).
+- ~66 KB is TFLM's interpreter + 7 op kernels + flatbuffer reader +
+  schema parser + tensor allocator.
+
+edge-infer's 54 KB is, by contrast:
+- ~51 KB const arrays of weights + scales + biases.
+- ~3 KB of generated `predict()` + `ops::*` MAC loops.
+- 0 bytes of interpreter, schema parser, allocator, or flatbuffer reader.
+
+The win comes from eliminating the runtime infrastructure, not from
+having "smaller weights." The right framing is "no interpreter, no
+flatbuffer parser, no schema machinery" — not "8× smaller flash."
+
+### Reproduce — A.3 (the apples-to-apples figure)
+
+Full methodology (TFLM clone + Keras model train + .tflite convert +
+op-resolver-pruned link + size measure) lives in
+`~/projects/external/tflm-bench/` outside this repo (gitignored from
+edge-infer; doesn't pollute the repo). End-to-end wall clock (after
+TFLM clone + toolchain download): ~3 minutes. The methodology document
+is `BENCHMARKS-TFLM-DRAFT.md` at this repo root, kept for review/audit
+purposes; full reproduce instructions there.
+
+Specifically:
+1. Clone TFLM at SHA `51bee03b`, run `gmake -f tools/make/Makefile
+   TARGET=cortex_m_generic TARGET_ARCH=cortex-m4+fp microlite` to
+   build the static library + download the bundled `arm-none-eabi-gcc
+   14.3.Rel1` toolchain (1.5 MB `.a` artifact).
+2. Train an architecturally-equivalent Keras MNIST model
+   (`Conv2D(8,3x3) → MaxPool2D → Conv2D(16,3x3) → MaxPool2D → Flatten
+   → Dense(64) → Dense(10)`), 5 epochs, INT8 quantize via
+   `tf.lite.TFLiteConverter` with a 200-image representative dataset.
+   Spot-checked accuracy: 97.65% on 2K test images (within the same
+   97–99% band as edge-infer's INT8 path).
+3. Generate `main_a3.cc` with `MicroMutableOpResolver<7>` registering
+   exactly the 7 ops the .tflite uses.
+4. Link with the same `-Os --specs=nano.specs --specs=nosys.specs
+   -Wl,--gc-sections` flags TFLM uses for its own library.
+5. `arm-none-eabi-size a3_pruned.elf` → text=127,256, data=104 → 124 KB.
+
+### Caveats (honest)
+
+- **Toolchain mismatch.** edge-infer's 54 KB was measured with
+  `arm-none-eabi-gcc 15.2.0` (Homebrew, no newlib needed for Rust).
+  TFLM's 124 KB / 363 KB were measured with `arm-none-eabi-gcc
+  14.3.Rel1` (downloaded by TFLM's Makefile because Homebrew's 15.2.0
+  doesn't ship newlib). Both are `-Os` release with LTO/`--gc-sections`;
+  cross-compiler size variance for similar workloads is typically <10%.
+  Pinning both builds to 14.3.Rel1 would close this caveat — on the
+  post-launch list.
+- **A.3 not executed on Cortex-M4.** The 124 KB TFLM binary links
+  cleanly — every symbol resolves, all 7 op kernels and the
+  interpreter / allocator / flatbuffer paths are referenced. The model
+  itself was independently validated for correctness in Python with
+  `tf.lite.Interpreter` (97.65% on 2K samples). We did *not* run
+  the linked binary on QEMU or silicon; that's a "verify it runs"
+  follow-up, ~1–2 hours of work, on the post-launch list.
+- **No CMSIS-NN.** TFLM was built with `OPTIMIZED_KERNEL_DIR` unset
+  (reference kernels only), matching edge-infer's reference-kernel
+  codegen. CMSIS-NN typically grows the all-ops build slightly (adds
+  an int8 fast-path alongside the reference path) and helps runtime
+  speed more than flash size. A CMSIS-NN row is on the post-launch
+  list.
+- **Float comparison not measured.** This is INT8 vs INT8. edge-infer's
+  f32 path (204 KB) would compare to a TFLM build with float reference
+  kernels enabled (~A.3 + ~50 KB extra). Out of scope here.
 
 ---
 
