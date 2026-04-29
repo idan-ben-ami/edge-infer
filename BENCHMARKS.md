@@ -189,16 +189,43 @@ Specifically:
 > resolution CIFAR-10 on mps2-an386). The earlier "~28 KB" analytic
 > estimate was wrong — see methodology note below.
 
-### Measured high-water marks
+### Measured high-water marks (post-B.25 stack-slot reuse codegen)
 
-| Example | Stack high-water | Reproduce |
-|---|---|---|
-| mnist (CNN) | **48,260 bytes (~47 KB)** | `cargo run --bin stack_probe --features demo --release` on lm3s6965evb |
-| fashion_mnist (CNN) | **48,260 bytes (~47 KB)** | same as mnist (same topology) |
-| iris (MLP) | **≤ 256 bytes** | < 256 reads as 256 due to safety-margin floor |
-| vibration_anomaly (MLP) | **416 bytes** | exact |
-| cifar10_tiny (small CNN) | **20,060 bytes (~20 KB)** | exact |
-| cifar10_mps2 (CNN) | **73,436 bytes (~72 KB)** | mps2-an386 only — exceeds lm3s6965evb's 64 KB SRAM, which is why this example needs the bigger board |
+| Example | Stack high-water | Pre-B.25 | Reduction |
+|---|---|---|---|
+| mnist (CNN) | **38,788 bytes (~38 KB)** | 48,260 B | **-19.6%** |
+| fashion_mnist (CNN) | **38,788 bytes (~38 KB)** | 48,260 B | **-19.6%** |
+| iris (MLP) | **≤ 256 bytes** | ≤ 256 B | already at floor |
+| vibration_anomaly (MLP) | **416 bytes** | 416 B | already minimal |
+| cifar10_tiny (small CNN) | **16,924 bytes (~17 KB)** | 20,060 B | **-15.6%** |
+| cifar10_mps2 (CNN, full-size) | **54,812 bytes (~54 KB)** | 73,436 B | **-25.4%** — *now fits 64 KB SRAM lm3s6965evb!* |
+
+**B.25 win:** the full-size CIFAR-10 model previously needed the 4 MB
+SRAM mps2-an386 board (74 KB stack > 64 KB lm3s6965evb SRAM). With
+phase-block scoping in the generator, it drops to 54 KB and runs on
+the 64 KB lm3s6965evb. Functionally verified end-to-end via QEMU.
+
+The earlier "shrunk to fit" `cifar10_tiny` example remains as a demo
+of architectural pre-pooling for memory-budget-tight scenarios, but
+the underlying premise ("you must shrink CIFAR-10 to fit a 64 KB
+MCU") no longer holds — you can run the full-size model with the
+new codegen.
+
+### How the optimization works
+
+The generator now wraps Conv-Relu-Pool clusters (and similar
+single-pass groups) in `let escape_var = { ... };` Rust blocks. Each
+block's intermediate buffers (e.g. `conv1_out` 25 KB, alive only
+inside its block) become eligible for stack-slot reuse once the block
+ends, while the block's "escape" tensor (`pool1_out` 6 KB) remains in
+the outer scope. Rust + LLVM with `opt-level = "z"`, LTO, and
+`codegen-units = 1` coalesces disjoint-lifetime stack slots
+automatically; nested blocks just give the compiler the lifetime
+information it needs.
+
+Zero new `unsafe` introduced. The 38 KB (vs theoretical 31 KB
+two-buffer ping-pong floor) leaves ~7 KB on the table that an
+unsafe-pool approach could recover; that's a v1.0 roadmap item.
 
 ### Reproduce
 

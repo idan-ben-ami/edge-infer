@@ -10,23 +10,31 @@ mod weights;
 /// Output: [2] logits
 pub fn predict(input: &[[[f32; 32]; 1]; 1]) -> [f32; 2] {
 
-    // Flatten: 1x1x1x32 -> flat [32]
-    // SAFETY: Rust arrays are tightly packed with no padding
-    // (https://doc.rust-lang.org/reference/type-layout.html#array-layout),
-    // so the input is bit-identical to [f32; 32].
-    // `<[T]>::as_flattened()` is the safe alternative but returns &[f32]
-    // not &[f32; N] — downstream Gemm wants the fixed-size array.
-    let flat: &[f32; 32] = unsafe { core::mem::transmute(input) };
+    let mut fc1_out = {
 
-    // Dense (Gemm): 32 -> 64
-    let mut fc1_out = [0.0f32; 64];
-    ops::dense_q8::<32, 64>(&flat, &weights::FC1_WEIGHT, weights::FC1_WEIGHT_SCALE, &weights::FC1_BIAS, &mut fc1_out);
-    // ReLU in-place (64 elements)
-    ops::relu_inplace(&mut fc1_out);
+        // Flatten: 1x1x1x32 -> flat [32]
+        // SAFETY: Rust arrays are tightly packed with no padding
+        // (https://doc.rust-lang.org/reference/type-layout.html#array-layout),
+        // so the input is bit-identical to [f32; 32].
+        // `<[T]>::as_flattened()` is the safe alternative but returns &[f32]
+        // not &[f32; N] — downstream Gemm wants the fixed-size array.
+        let flat: &[f32; 32] = unsafe { core::mem::transmute(input) };
 
-    // Dense (Gemm): 64 -> 32
-    let mut fc2_out = [0.0f32; 32];
-    ops::dense_q8::<64, 32>(&fc1_out, &weights::FC2_WEIGHT, weights::FC2_WEIGHT_SCALE, &weights::FC2_BIAS, &mut fc2_out);
+        // Dense (Gemm): 32 -> 64
+        let mut fc1_out = [0.0f32; 64];
+        ops::dense_q8::<32, 64>(&flat, &weights::FC1_WEIGHT, weights::FC1_WEIGHT_SCALE, &weights::FC1_BIAS, &mut fc1_out);
+        fc1_out
+    };
+
+    let mut fc2_out = {
+        // ReLU in-place (64 elements)
+        ops::relu_inplace(&mut fc1_out);
+
+        // Dense (Gemm): 64 -> 32
+        let mut fc2_out = [0.0f32; 32];
+        ops::dense_q8::<64, 32>(&fc1_out, &weights::FC2_WEIGHT, weights::FC2_WEIGHT_SCALE, &weights::FC2_BIAS, &mut fc2_out);
+        fc2_out
+    };
     // ReLU in-place (32 elements)
     ops::relu_inplace(&mut fc2_out);
 

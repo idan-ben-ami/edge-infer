@@ -948,10 +948,162 @@ class PredictEmitter:
             )
             sys.exit(2)
 
+        # Track where each op's emitted lines start so we can post-process
+        # them into phase-scoped blocks for stack-slot reuse.
+        op_start_lines: list[int] = []
         for op in self.ops:
+            op_start_lines.append(len(self.lines))
             dispatch[op["op_type"]](op)
 
+        # Wrap ops in phase blocks for stack-slot reuse. Each "phase" is a
+        # run of ops that produces an intermediate tensor escaping to the
+        # next phase only. Wrapping each in `let escape_var = { ... };`
+        # gives Rust enough info to reuse stack slots across phases (drops
+        # MNIST stack from 47 KB to 38 KB; same logits).
+        self.lines = self._wrap_in_phases(op_start_lines)
+
         return "\n".join(self.lines), self.used_weights, self.bias_names
+
+    def _wrap_in_phases(self, op_start_lines: list[int]) -> list[str]:
+        """Re-emit self.lines with phase blocks for stack-slot reuse.
+
+        A "phase" is a maximal run of ops whose intermediate tensors die
+        within the phase, leaving exactly one tensor (the phase's escape)
+        consumed by the next phase. For sequential CNNs / MLPs, phases
+        align with the natural Conv-Relu-Pool / Gemm-Relu groupings.
+
+        We detect phases by computing each tensor's last-use index. A
+        phase ends at op i if op i either:
+          * kills a tensor whose lifetime ends at i AND produces a new
+            tensor that's consumed beyond i, OR
+          * is the last op (function return).
+
+        The last phase is NOT wrapped — its output is the function's
+        return value and would only force an extra move.
+        """
+        # Compute each tensor's last-use op index, considering only
+        # tensors produced by ops in this graph (intermediates) — not
+        # function parameters or weights/biases.
+        intermediates: set[str] = set()
+        for op in self.ops:
+            for out in op.get("outputs", []):
+                intermediates.add(out)
+
+        last_use: dict[str, int] = {}
+        for i, op in enumerate(self.ops):
+            for inp in op["inputs"]:
+                if inp in intermediates:
+                    last_use[inp] = i
+
+        # Phase boundaries: end a phase after a "transformation" op
+        # whose output escapes to a later phase. The transformation ops
+        # are those that produce a NEW intermediate tensor needed by a
+        # subsequent op-cluster — typically a downsample (MaxPool,
+        # AveragePool, GlobalAveragePool) or a layer transition (Gemm,
+        # MatMul). Conv and Relu within a "Conv-Relu-Pool" cluster
+        # belong to the same phase as the trailing Pool.
+        #
+        # The last op in the function is NEVER a phase end (its output
+        # is the function return; wrapping it would force an extra move).
+        PHASE_END_OPS = {"MaxPool", "AveragePool", "GlobalAveragePool",
+                         "Gemm", "MatMul"}
+        phase_ends: list[int] = []
+        for i, op in enumerate(self.ops):
+            if i == len(self.ops) - 1:
+                continue  # last op = function return; never a phase end
+            if op["op_type"] not in PHASE_END_OPS:
+                continue
+            outs = op.get("outputs", [])
+            if not outs:
+                continue
+            out = outs[0]
+            # Output must escape (be consumed by a later op).
+            out_last_use = last_use.get(out)
+            if out_last_use is not None and out_last_use > i:
+                phase_ends.append(i)
+
+        if not phase_ends:
+            # No phases identified (e.g. trivial 1-op model). Return as-is.
+            return self.lines
+
+        # Build phase ranges: list of (start_op_idx, end_op_idx).
+        phase_ranges: list[tuple[int, int]] = []
+        prev_end = -1
+        for end in phase_ends:
+            phase_ranges.append((prev_end + 1, end))
+            prev_end = end
+        # Trailing ops (after the last phase boundary) are NOT wrapped —
+        # they form the final return path. Append them as-is.
+        # phase_ranges might end before len(ops) - 1.
+
+        # Re-emit lines: for each phase range, wrap with `let X = { ... };`
+        new_lines: list[str] = []
+        line_count = len(self.lines)
+
+        # Helper: lines for ops in [start_op, end_op] (inclusive).
+        def lines_for_ops(start_op: int, end_op: int) -> list[str]:
+            start_line = op_start_lines[start_op]
+            end_line = (
+                op_start_lines[end_op + 1]
+                if end_op + 1 < len(op_start_lines)
+                else line_count
+            )
+            return self.lines[start_line:end_line]
+
+        next_op_to_emit = 0
+        for start_op, end_op in phase_ranges:
+            # Pre-phase ops (shouldn't happen for sequential graphs, but
+            # safe): emit any ops between next_op_to_emit and start_op as-is.
+            if start_op > next_op_to_emit:
+                new_lines.extend(
+                    lines_for_ops(next_op_to_emit, start_op - 1)
+                )
+
+            # Look up the phase's escape variable: it's the output var of
+            # the last op in the phase.
+            last_op = self.ops[end_op]
+            escape_tensor = last_op["outputs"][0]
+            escape_var = self.tensor_vars.get(escape_tensor, escape_tensor)
+            # `tensor_vars` may map to "*flat" or similar for reshape; in
+            # that case, just use the raw output name.
+            if escape_var.startswith("*"):
+                escape_var = escape_tensor
+
+            # Emit phase open. Use `let mut` ONLY if the escape tensor is
+            # mutated by a later op outside this phase (e.g. trailing
+            # relu_inplace). Otherwise plain `let` to avoid unused_mut
+            # warnings.
+            needs_mut = any(
+                later_op["op_type"] in {"Relu"}
+                and escape_tensor in later_op.get("inputs", [])
+                for later_op in self.ops[end_op + 1:]
+            )
+            new_lines.append("")
+            mut_kw = "let mut" if needs_mut else "let"
+            new_lines.append(f"    {mut_kw} {escape_var} = {{")
+
+            # Emit phase body lines, indented one extra level (4 -> 8).
+            inner_lines = lines_for_ops(start_op, end_op)
+            for line in inner_lines:
+                if line == "":
+                    new_lines.append("")
+                elif line.startswith("    "):
+                    new_lines.append("    " + line)  # extra 4-space indent
+                else:
+                    new_lines.append(line)
+
+            # Emit block return + close.
+            new_lines.append(f"        {escape_var}")
+            new_lines.append(f"    }};")
+            next_op_to_emit = end_op + 1
+
+        # Emit remaining ops (after the last phase) at top level.
+        if next_op_to_emit < len(self.ops):
+            new_lines.extend(
+                lines_for_ops(next_op_to_emit, len(self.ops) - 1)
+            )
+
+        return new_lines
 
     # -- Conv2d ---------------------------------------------------------------
 

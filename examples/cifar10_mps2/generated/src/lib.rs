@@ -10,53 +10,69 @@ mod weights;
 /// Output: [10] logits
 pub fn predict(input: &[[[f32; 32]; 32]; 3]) -> [f32; 10] {
 
-    // Conv: 3x32x32 -> 8x32x32 (kernel=3x3, pad=1)
-    let mut conv1_out = [[[0.0f32; 32]; 32]; 8];
-    ops::conv2d_q8::<3, 8, 3, 32, 32, 32, 32, 1>(
-        input, &weights::CONV1_WEIGHT, weights::CONV1_WEIGHT_SCALE, &weights::CONV1_BIAS, &mut conv1_out,
-    );
-    // ReLU in-place (8x32x32)
-    ops::relu_inplace(conv1_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
+    let pool1_out = {
 
-    // MaxPool: 8x32x32 -> 8x16x16
-    let mut pool1_out = [[[0.0f32; 16]; 16]; 8];
-    ops::max_pool2d::<8, 32, 32, 16, 16>(&conv1_out, &mut pool1_out);
+        // Conv: 3x32x32 -> 8x32x32 (kernel=3x3, pad=1)
+        let mut conv1_out = [[[0.0f32; 32]; 32]; 8];
+        ops::conv2d_q8::<3, 8, 3, 32, 32, 32, 32, 1>(
+            input, &weights::CONV1_WEIGHT, weights::CONV1_WEIGHT_SCALE, &weights::CONV1_BIAS, &mut conv1_out,
+        );
+        // ReLU in-place (8x32x32)
+        ops::relu_inplace(conv1_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
 
-    // Conv: 8x16x16 -> 16x16x16 (kernel=3x3, pad=1)
-    let mut conv2_out = [[[0.0f32; 16]; 16]; 16];
-    ops::conv2d_q8::<8, 16, 3, 16, 16, 16, 16, 1>(
-        &pool1_out, &weights::CONV2_WEIGHT, weights::CONV2_WEIGHT_SCALE, &weights::CONV2_BIAS, &mut conv2_out,
-    );
-    // ReLU in-place (16x16x16)
-    ops::relu_inplace(conv2_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
+        // MaxPool: 8x32x32 -> 8x16x16
+        let mut pool1_out = [[[0.0f32; 16]; 16]; 8];
+        ops::max_pool2d::<8, 32, 32, 16, 16>(&conv1_out, &mut pool1_out);
+        pool1_out
+    };
 
-    // MaxPool: 16x16x16 -> 16x8x8
-    let mut pool2_out = [[[0.0f32; 8]; 8]; 16];
-    ops::max_pool2d::<16, 16, 16, 8, 8>(&conv2_out, &mut pool2_out);
+    let pool2_out = {
 
-    // Conv: 16x8x8 -> 32x8x8 (kernel=3x3, pad=1)
-    let mut conv3_out = [[[0.0f32; 8]; 8]; 32];
-    ops::conv2d_q8::<16, 32, 3, 8, 8, 8, 8, 1>(
-        &pool2_out, &weights::CONV3_WEIGHT, weights::CONV3_WEIGHT_SCALE, &weights::CONV3_BIAS, &mut conv3_out,
-    );
-    // ReLU in-place (32x8x8)
-    ops::relu_inplace(conv3_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
+        // Conv: 8x16x16 -> 16x16x16 (kernel=3x3, pad=1)
+        let mut conv2_out = [[[0.0f32; 16]; 16]; 16];
+        ops::conv2d_q8::<8, 16, 3, 16, 16, 16, 16, 1>(
+            &pool1_out, &weights::CONV2_WEIGHT, weights::CONV2_WEIGHT_SCALE, &weights::CONV2_BIAS, &mut conv2_out,
+        );
+        // ReLU in-place (16x16x16)
+        ops::relu_inplace(conv2_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
 
-    // MaxPool: 32x8x8 -> 32x4x4
-    let mut pool3_out = [[[0.0f32; 4]; 4]; 32];
-    ops::max_pool2d::<32, 8, 8, 4, 4>(&conv3_out, &mut pool3_out);
+        // MaxPool: 16x16x16 -> 16x8x8
+        let mut pool2_out = [[[0.0f32; 8]; 8]; 16];
+        ops::max_pool2d::<16, 16, 16, 8, 8>(&conv2_out, &mut pool2_out);
+        pool2_out
+    };
 
-    // Reshape: 32x4x4 -> flat [512]
-    // SAFETY: Rust arrays are tightly packed with no padding
-    // (https://doc.rust-lang.org/reference/type-layout.html#array-layout),
-    // so [[[f32; 4]; 4]; 32] is bit-identical to [f32; 512].
-    // `<[T]>::as_flattened()` is the safe alternative but returns &[f32]
-    // not &[f32; N] — downstream Gemm wants the fixed-size array.
-    let flat: &[f32; 512] = unsafe { core::mem::transmute(&pool3_out) };
+    let pool3_out = {
 
-    // Dense (Gemm): 512 -> 64
-    let mut fc1_out = [0.0f32; 64];
-    ops::dense_q8::<512, 64>(&flat, &weights::FC1_WEIGHT, weights::FC1_WEIGHT_SCALE, &weights::FC1_BIAS, &mut fc1_out);
+        // Conv: 16x8x8 -> 32x8x8 (kernel=3x3, pad=1)
+        let mut conv3_out = [[[0.0f32; 8]; 8]; 32];
+        ops::conv2d_q8::<16, 32, 3, 8, 8, 8, 8, 1>(
+            &pool2_out, &weights::CONV3_WEIGHT, weights::CONV3_WEIGHT_SCALE, &weights::CONV3_BIAS, &mut conv3_out,
+        );
+        // ReLU in-place (32x8x8)
+        ops::relu_inplace(conv3_out.as_mut_slice().as_flattened_mut().as_flattened_mut());
+
+        // MaxPool: 32x8x8 -> 32x4x4
+        let mut pool3_out = [[[0.0f32; 4]; 4]; 32];
+        ops::max_pool2d::<32, 8, 8, 4, 4>(&conv3_out, &mut pool3_out);
+        pool3_out
+    };
+
+    let mut fc1_out = {
+
+        // Reshape: 32x4x4 -> flat [512]
+        // SAFETY: Rust arrays are tightly packed with no padding
+        // (https://doc.rust-lang.org/reference/type-layout.html#array-layout),
+        // so [[[f32; 4]; 4]; 32] is bit-identical to [f32; 512].
+        // `<[T]>::as_flattened()` is the safe alternative but returns &[f32]
+        // not &[f32; N] — downstream Gemm wants the fixed-size array.
+        let flat: &[f32; 512] = unsafe { core::mem::transmute(&pool3_out) };
+
+        // Dense (Gemm): 512 -> 64
+        let mut fc1_out = [0.0f32; 64];
+        ops::dense_q8::<512, 64>(&flat, &weights::FC1_WEIGHT, weights::FC1_WEIGHT_SCALE, &weights::FC1_BIAS, &mut fc1_out);
+        fc1_out
+    };
     // ReLU in-place (64 elements)
     ops::relu_inplace(&mut fc1_out);
 
