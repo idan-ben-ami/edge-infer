@@ -69,7 +69,7 @@ same code generator.
 
 | Example | Topology | Domain | Test accuracy | INT8 weights | Peak activation RAM | Target board |
 |---|---|---|---|---|---|---|
-| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.88% | 52 KB | ~28 KB | lm3s6965evb (64 KB) |
+| [`examples/mnist/`](examples/mnist/) | CNN | Handwritten digits | 98.76% | 52 KB | ~28 KB | lm3s6965evb (64 KB) |
 | [`examples/fashion_mnist/`](examples/fashion_mnist/) | CNN | Clothing categories | 89.79% | 52 KB | ~28 KB | lm3s6965evb |
 | [`examples/iris/`](examples/iris/) | MLP 4→16→8→3 | Tabular classifier | 100% | 336 B | < 1 KB | lm3s6965evb |
 | [`examples/vibration_anomaly/`](examples/vibration_anomaly/) | MLP 32→64→32→2 | **Real CWRU bearing-fault data** | 100% on a leakage-prone split — see [example README](examples/vibration_anomaly/README.md) | 4.5 KB | < 1 KB | lm3s6965evb |
@@ -258,11 +258,11 @@ MNIST CNN (2x Conv + 2x Dense, ~51K parameters) on Cortex-M4:
 
 | Approach | Flash | Peak RAM | Runtime overhead | Heap | Accuracy | Notes |
 |---|---|---|---|---|---|---|
-| **edge-infer (INT8)** | **54 KB** | **~28 KB stack** | **None** | **0** | **98.88%** | This MNIST topology, this toolchain. Apples-to-apples. |
-| **edge-infer (f32)** | **204 KB** | **~28 KB stack** | **None** | **0** | **98.87%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (INT8)** | **54 KB** | **~28 KB stack** | **None** | **0** | **98.76%** | This MNIST topology, this toolchain. Apples-to-apples. |
+| **edge-infer (f32)** | **204 KB** | **~28 KB stack** | **None** | **0** | **98.78%** | This MNIST topology, this toolchain. Apples-to-apples. |
 | TFLite Micro (all-ops, my local build) | 447 KB | Tensor arena (varies) | Runtime dispatch, FlatBuffer parsing | Tensor arena | n/a (lib only) | Same Cortex-M4 toolchain, no op-resolver pruning. **The apples-to-apples baseline.** |
-| TFLite Micro (optimized w/ op-resolver, *cited*) | ~105 KB | Tensor arena | Same | Same | 98.87% | Published 2021 nRF52840 figure ([arxiv 2112.01319](https://arxiv.org/abs/2112.01319)) — different chip, different MNIST topology, careful op-resolver pruning. **Reference, not apples-to-apples.** |
-| TFLite Micro (typical real-world, *cited*) | ~275 KB | Tensor arena | Same | Same | 98.87% | Same paper's "real-world" figure. **Reference, not apples-to-apples.** |
+| TFLite Micro (optimized w/ op-resolver, *cited*) | ~105 KB | Tensor arena | Same | Same | n/a (different model) | Published 2021 nRF52840 figure ([arxiv 2112.01319](https://arxiv.org/abs/2112.01319)) — different chip, different MNIST topology, careful op-resolver pruning. **Reference, not apples-to-apples.** |
+| TFLite Micro (typical real-world, *cited*) | ~275 KB | Tensor arena | Same | Same | n/a (different model) | Same paper's "real-world" figure. **Reference, not apples-to-apples.** |
 
 The honest comparison: **54 KB vs my own 447 KB all-ops TFLite Micro
 build on the same toolchain** — that's an 8× win on flash, no
@@ -289,7 +289,7 @@ useful reference, not a head-to-head benchmark.
 
 Accuracy tested on the full MNIST test set (10,000 images) using
 [`scripts/eval_full_mnist.py`](scripts/eval_full_mnist.py): f32 ONNX
-98.87% vs. INT8-weights-simulated 98.88%, with 5 of 10,000 predictions
+98.78% vs. INT8-weights-simulated 98.76%, with 5 of 10,000 predictions
 differing. **Methodology:** the "INT8-weights-simulated" path applies
 edge-infer's exact per-tensor symmetric quantize-then-dequantize step
 to each weight tensor and reruns the resulting model in ONNX Runtime

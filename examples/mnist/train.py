@@ -107,11 +107,20 @@ def train():
     )
     print(f"\nExported ONNX model to {onnx_path}")
 
-    # Verify ONNX model
+    # PyTorch 2.x splits weights into an external .data file by default for
+    # any model bigger than ~1 KB. Re-save as a single self-contained ONNX
+    # file so the repo ships a one-file model that loads on a fresh clone
+    # without a sidecar.
     import onnx
+    onnx_model = onnx.load(onnx_path, load_external_data=True)
+    onnx.save(onnx_model, onnx_path, save_as_external_data=False)
+    data_path = SCRIPT_DIR / "mnist_cnn.onnx.data"
+    if data_path.exists():
+        data_path.unlink()
+
     onnx_model = onnx.load(onnx_path)
     onnx.checker.check_model(onnx_model)
-    print("ONNX model verified successfully")
+    print("ONNX model verified successfully (single-file format)")
 
 
 if __name__ == "__main__":
