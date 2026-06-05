@@ -10,6 +10,16 @@ on:
 jobs:
   generator:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Lowest supported (requires-python floor) and newest stable, to
+        # catch breakage on both ends of the supported range.
+        python-version: ["3.11", "3.14"]
+    # Override the repo's .python-version pin so each matrix leg actually
+    # runs on its own interpreter (UV_PYTHON beats .python-version in uv).
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,7 +29,7 @@ jobs:
           version: "latest"
 
       - name: Set up Python
-        run: uv python install 3.11
+        run: uv python install ${{ matrix.python-version }}
 
       - name: Sync dependencies (no train extras)
         run: uv sync
